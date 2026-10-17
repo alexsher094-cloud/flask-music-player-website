@@ -179,6 +179,8 @@ def api_cover(track_id):
 if __name__ == "__main__":
     if not os.path.isdir(MUSIC_DIR):
         os.makedirs(MUSIC_DIR)
+    debug = os.environ.get("FLASK_DEBUG", "0") == "1"
     print(f" Музыка: {MUSIC_DIR}")
     print(f" Найдено треков: {len(scan_music())}")
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    print(f" Debug: {'ON' if debug else 'OFF'}")
+    app.run(host="0.0.0.0", port=5000, debug=debug)
