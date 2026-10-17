@@ -1,0 +1,890 @@
+/* ============================================================
+   MOBILE.CSS
+   Подключается ПОСЛЕ style.css.
+   Содержит только мобильные стили и touch-улучшения.
+   ============================================================ */
+
+/* ============================================================
+   НИЖНЯЯ НАВИГАЦИЯ — скрыта на десктопе по умолчанию
+   ============================================================ */
+.bottom-nav {
+    display: none;
+}
+
+
+/* ============================================================
+   TOUCH — общие улучшения для всех размеров
+   ============================================================ */
+button,
+.track-row,
+.nav-item,
+.album-card,
+.artist-card,
+.artist-album-card,
+.album-nav-btn,
+.ctrl-btn,
+.fav-btn,
+.bottom-nav-item {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+}
+
+button {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+input[type="range"] {
+    touch-action: none;
+}
+
+.main,
+.artist-albums-scroll {
+    -webkit-overflow-scrolling: touch;
+}
+
+
+/* ============================================================
+   ПЛАНШЕТЫ — до 900px
+   ============================================================ */
+@media (max-width: 900px) {
+    .main {
+        padding: 16px 16px 20px;
+    }
+
+    .albums-grid,
+    .artists-grid {
+        gap: 14px;
+    }
+
+    .eq-band-slider,
+    .eq-band-slider input[type="range"] {
+        height: 140px;
+    }
+
+    .eq-band-slider input[type="range"] {
+        width: 140px;
+    }
+}
+
+
+/* ============================================================
+   ТЕЛЕФОНЫ — до 700px
+   ============================================================ */
+@media (max-width: 700px) {
+    :root {
+        --player-h: auto;
+        --sidebar-w: 0;
+        --bottom-nav-h: 56px;
+    }
+
+    body {
+        overflow: hidden;
+    }
+
+    .app {
+        grid-template-columns: 1fr;
+        grid-template-rows: 1fr auto auto;
+        grid-template-areas:
+            "main"
+            "player"
+            "bottomnav";
+        gap: 0;
+        padding: 0;
+        height: 100vh;
+        height: 100dvh;
+        padding-top: env(safe-area-inset-top);
+        padding-left: env(safe-area-inset-left);
+        padding-right: env(safe-area-inset-right);
+    }
+
+    .sidebar {
+        display: none;
+    }
+
+    /* ===================== BOTTOM NAV ===================== */
+    .bottom-nav {
+        grid-area: bottomnav;
+        display: flex;
+        background: var(--bg-elev);
+        border-top: 1px solid var(--border);
+        height: var(--bottom-nav-h);
+        padding-bottom: env(safe-area-inset-bottom);
+        flex-shrink: 0;
+        z-index: 10;
+    }
+
+    .bottom-nav-item {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 2px;
+        background: transparent;
+        color: var(--text-3);
+        position: relative;
+        transition: color 0.15s var(--ease);
+        padding: 6px 4px;
+        border: none;
+        cursor: pointer;
+    }
+
+    .bottom-nav-item svg {
+        width: 20px;
+        height: 20px;
+        flex-shrink: 0;
+    }
+
+    .bottom-nav-item span:not(.count-badge) {
+        font-size: 10px;
+        font-weight: 500;
+        letter-spacing: -0.02em;
+        white-space: nowrap;
+    }
+
+    .bottom-nav-item.active {
+        color: var(--accent);
+    }
+
+    .bottom-nav-item .count-badge {
+        position: absolute;
+        top: 4px;
+        right: 50%;
+        transform: translateX(20px);
+        margin: 0;
+        font-size: 9px;
+        padding: 1px 5px;
+        min-width: 16px;
+        height: 14px;
+        line-height: 12px;
+        border-radius: 7px;
+    }
+
+    /* ===================== ОСНОВНАЯ ОБЛАСТЬ ===================== */
+    .main {
+        border-radius: 0;
+        padding: 12px 12px 16px;
+    }
+
+    .main-header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+        margin-bottom: 14px;
+        padding-bottom: 12px;
+    }
+
+    .main-header-left {
+        gap: 8px;
+        align-items: baseline;
+    }
+
+    .page-title {
+        font-size: 20px;
+    }
+
+    .page-subtitle {
+        font-size: 11.5px;
+    }
+
+    .main-header-right {
+        width: 100%;
+        gap: 8px;
+    }
+
+    .search-wrap,
+    .search-wrap:focus-within {
+        width: 100%;
+    }
+
+    .search-input {
+        padding: 8px 36px 8px 38px;
+        font-size: 13px;
+    }
+
+    .search-icon {
+        left: 12px;
+        width: 14px;
+        height: 14px;
+    }
+
+    .search-clear {
+        right: 6px;
+    }
+
+    .btn-play-all {
+        padding: 8px 14px;
+        font-size: 12.5px;
+        flex-shrink: 0;
+    }
+
+    /* ===================== СПИСОК ТРЕКОВ ===================== */
+    .track-list-header,
+    .track-row {
+        grid-template-columns: 24px 36px 1fr 46px 32px;
+        gap: 8px;
+        padding: 6px 8px;
+    }
+
+    .track-row {
+        min-height: 52px;
+    }
+
+    .col-album,
+    .row-album {
+        display: none;
+    }
+
+    .row-cover {
+        width: 36px;
+        height: 36px;
+        border-radius: 3px;
+    }
+
+    .row-num {
+        font-size: 11.5px;
+    }
+
+    .row-title {
+        font-size: 13px;
+    }
+
+    .row-artist {
+        font-size: 11px;
+    }
+
+    .row-duration {
+        font-size: 11.5px;
+    }
+
+    .fav-btn {
+        width: 30px;
+        height: 30px;
+    }
+
+    .fav-btn svg {
+        width: 15px;
+        height: 15px;
+    }
+
+    /* ===================== СЕТКИ ===================== */
+    .albums-grid,
+    .artists-grid {
+        grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+        gap: 10px;
+    }
+
+    .album-card {
+        padding: 10px;
+        border-radius: 10px;
+    }
+
+    .album-cover {
+        margin-bottom: 8px;
+        border-radius: 6px;
+    }
+
+    .album-play-btn {
+        width: 40px;
+        height: 40px;
+        bottom: 8px;
+        right: 8px;
+    }
+
+    .album-play-btn svg {
+        width: 18px;
+        height: 18px;
+    }
+
+    .album-name {
+        font-size: 12.5px;
+    }
+
+    .album-artist {
+        font-size: 11.5px;
+    }
+
+    .album-count {
+        font-size: 11px;
+    }
+
+    .artist-card {
+        padding: 14px 10px 10px;
+        border-radius: 10px;
+    }
+
+    .artist-avatar {
+        width: 90px;
+        height: 90px;
+        font-size: 32px;
+        margin-bottom: 10px;
+    }
+
+    .artist-name {
+        font-size: 13px;
+    }
+
+    .artist-count {
+        font-size: 11px;
+    }
+
+    /* ===================== ДЕТАЛИ ===================== */
+    .back-btn {
+        padding: 6px 12px;
+        font-size: 12px;
+        margin-bottom: 14px;
+    }
+
+    .back-btn svg {
+        width: 14px;
+        height: 14px;
+    }
+
+    .album-hero,
+    .artist-hero {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 16px;
+        padding-bottom: 18px;
+        margin-bottom: 18px;
+    }
+
+    .album-hero-cover {
+        width: 130px;
+        height: 130px;
+        border-radius: 10px;
+    }
+
+    .artist-hero-avatar {
+        width: 130px;
+        height: 130px;
+        font-size: 44px;
+    }
+
+    .album-hero-title,
+    .artist-hero-title {
+        font-size: 24px;
+        line-height: 1.15;
+    }
+
+    .album-hero-label,
+    .artist-hero-label {
+        font-size: 10px;
+    }
+
+    .album-hero-meta,
+    .artist-hero-meta {
+        font-size: 12.5px;
+    }
+
+    .btn-play-album {
+        padding: 9px 18px;
+        font-size: 13px;
+    }
+
+    .btn-play-album svg {
+        width: 14px;
+        height: 14px;
+    }
+
+    .artist-albums-section {
+        margin-bottom: 20px;
+    }
+
+    .artist-albums-title {
+        font-size: 14px;
+    }
+
+    .artist-albums-title::before {
+        height: 14px;
+    }
+
+    .album-nav-btn {
+        width: 28px;
+        height: 28px;
+    }
+
+    .album-nav-btn svg {
+        width: 14px;
+        height: 14px;
+    }
+
+    .artist-album-card {
+        flex: 0 0 130px;
+        width: 130px;
+        padding: 6px;
+        border-radius: 8px;
+    }
+
+    .artist-album-cover {
+        margin-bottom: 8px;
+        border-radius: 6px;
+    }
+
+    .artist-album-name {
+        font-size: 12px;
+    }
+
+    .artist-album-year {
+        font-size: 10.5px;
+    }
+
+    .artist-album-play {
+        width: 32px;
+        height: 32px;
+        bottom: 6px;
+        right: 6px;
+    }
+
+    .artist-album-play svg {
+        width: 14px;
+        height: 14px;
+    }
+
+    /* ===================== НАСТРОЙКИ ===================== */
+    .settings-panel {
+        padding: 0 0 20px;
+    }
+
+    .settings-header,
+    .theme-header {
+        padding: 14px;
+        gap: 12px;
+        margin-bottom: 14px;
+        border-radius: 12px;
+    }
+
+    .settings-icon,
+    .theme-header-icon {
+        width: 44px;
+        height: 44px;
+        border-radius: 12px;
+    }
+
+    .settings-icon svg,
+    .theme-header-icon svg {
+        width: 22px;
+        height: 22px;
+    }
+
+    .settings-header-text h2,
+    .theme-header-text h2 {
+        font-size: 15.5px;
+    }
+
+    .settings-header-text p,
+    .theme-header-text p {
+        font-size: 11.5px;
+    }
+
+    .eq-presets {
+        gap: 5px;
+        margin-bottom: 14px;
+    }
+
+    .eq-preset-btn {
+        padding: 6px 11px;
+        font-size: 11.5px;
+    }
+
+    .eq-bands {
+        padding: 14px 4px 12px;
+        gap: 0;
+        border-radius: 12px;
+        margin-bottom: 14px;
+        justify-content: space-between;
+    }
+
+    .eq-band {
+        min-width: 0;
+        flex: 1;
+        gap: 5px;
+    }
+
+    .eq-band-slider {
+        height: 130px;
+        width: 24px;
+    }
+
+    .eq-band-slider input[type="range"] {
+        width: 130px;
+        height: 24px;
+    }
+
+    .eq-band-slider input[type="range"]::-webkit-slider-thumb {
+        width: 16px;
+        height: 16px;
+        margin-top: -5px;
+    }
+
+    .eq-band-slider input[type="range"]::-moz-range-thumb {
+        width: 16px;
+        height: 16px;
+    }
+
+    .eq-band-value {
+        font-size: 10px;
+        min-width: 28px;
+        padding: 2px 4px;
+    }
+
+    .eq-band-label {
+        font-size: 9px;
+        letter-spacing: -0.03em;
+    }
+
+    .btn-reset-eq {
+        padding: 8px 16px;
+        font-size: 12.5px;
+    }
+
+    .theme-section {
+        padding-top: 20px;
+        margin-top: 20px;
+    }
+
+    .theme-presets {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 8px;
+        margin-bottom: 14px;
+    }
+
+    .theme-preset {
+        padding: 10px;
+    }
+
+    .theme-preset-name {
+        font-size: 12px;
+    }
+
+    .theme-custom {
+        padding: 4px 14px;
+        border-radius: 12px;
+        margin-bottom: 14px;
+    }
+
+    .theme-row {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+        padding: 14px 0;
+    }
+
+    .theme-row-label > span:first-child {
+        font-size: 13px;
+    }
+
+    .theme-row-hint {
+        font-size: 11px;
+    }
+
+    .theme-slider-wrap {
+        width: 100%;
+        min-width: 0;
+    }
+
+    .theme-color-wrap {
+        justify-content: space-between;
+        width: 100%;
+    }
+
+    .theme-color-value {
+        min-width: 0;
+    }
+
+        /* ===================== ПЛЕЕР ===================== */
+    .player {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        grid-template-rows: auto auto auto;
+        grid-template-areas:
+            "left    left     right"
+            "controls controls controls"
+            "progress progress progress";
+        gap: 6px;
+        padding: 8px 12px;
+        border-radius: 0;
+        border-top: 1px solid var(--border);
+        background: var(--bg-elev);
+        flex-shrink: 0;
+    }
+
+    /* --- Строка 1: обложка + название (слева) + fav + mute (справа) --- */
+    .player-left {
+        grid-area: left;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+    }
+
+    .player-cover {
+        width: 38px;
+        height: 38px;
+        border-radius: 5px;
+        flex-shrink: 0;
+    }
+
+    .cover-fallback svg {
+        width: 18px;
+        height: 18px;
+    }
+
+    .player-info {
+        min-width: 0;
+    }
+
+    .player-title {
+        font-size: 12.5px;
+    }
+
+    .player-artist {
+        font-size: 11px;
+    }
+
+    /* .player-right — fav + mute (volume-bar скрыт) */
+    .player-right {
+        grid-area: right;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        justify-content: flex-end;
+    }
+
+    .player-right .volume-bar {
+        display: none;
+    }
+
+    .ctrl-btn.small {
+        width: 32px;
+        height: 32px;
+        flex-shrink: 0;
+    }
+
+    .ctrl-btn.small svg {
+        width: 16px;
+        height: 16px;
+    }
+
+    /* --- Строка 2: контролы --- */
+    .player-center {
+        display: contents;
+    }
+
+    .player-controls {
+        grid-area: controls;
+        width: 100%;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .ctrl-btn {
+        width: 36px;
+        height: 36px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .ctrl-btn svg {
+        width: 18px;
+        height: 18px;
+    }
+
+    .ctrl-btn.play-btn {
+        width: 44px;
+        height: 44px;
+    }
+
+    .ctrl-btn.play-btn svg {
+        width: 22px;
+        height: 22px;
+    }
+
+    #btn-shuffle,
+    #btn-repeat {
+        display: flex;
+    }
+
+    #btn-shuffle svg,
+    #btn-repeat svg {
+        width: 17px;
+        height: 17px;
+    }
+
+    /* --- Строка 3: прогресс --- */
+    .player-progress {
+        grid-area: progress;
+        width: 100%;
+        gap: 8px;
+        display: flex;
+        align-items: center;
+    }
+
+    .time {
+        font-size: 10.5px;
+        min-width: 30px;
+    }
+    /* ===================== ПУСТОЕ СОСТОЯНИЕ ===================== */
+    .empty-state {
+        padding: 60px 16px;
+    }
+
+    .empty-icon {
+        width: 64px;
+        height: 64px;
+        margin-bottom: 14px;
+    }
+
+    .empty-icon svg {
+        width: 28px;
+        height: 28px;
+    }
+
+    .empty-state h3 {
+        font-size: 15px;
+    }
+
+    .empty-state p {
+        font-size: 12.5px;
+    }
+}
+
+
+/* ============================================================
+   ОЧЕНЬ УЗКИЕ ЭКРАНЫ — до 400px
+   ============================================================ */
+@media (max-width: 400px) {
+    .track-list-header,
+    .track-row {
+        grid-template-columns: 22px 32px 1fr 40px 28px;
+        gap: 6px;
+        padding: 6px;
+    }
+
+    .row-cover {
+        width: 32px;
+        height: 32px;
+    }
+
+    .row-title {
+        font-size: 12.5px;
+    }
+
+    .row-artist {
+        font-size: 10.5px;
+    }
+
+    .albums-grid,
+    .artists-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .artist-avatar {
+        width: 80px;
+        height: 80px;
+        font-size: 28px;
+    }
+
+    .eq-band-label {
+        font-size: 8px;
+    }
+
+    .eq-band-value {
+        font-size: 9px;
+        min-width: 26px;
+    }
+
+    .player-cover {
+        width: 34px;
+        height: 34px;
+    }
+
+    .ctrl-btn {
+        width: 32px;
+        height: 32px;
+    }
+
+    .ctrl-btn.play-btn {
+        width: 40px;
+        height: 40px;
+    }
+
+    .ctrl-btn svg {
+        width: 16px;
+        height: 16px;
+    }
+
+    .ctrl-btn.play-btn svg {
+        width: 20px;
+        height: 20px;
+    }
+
+    #btn-shuffle svg,
+    #btn-repeat svg {
+        width: 15px;
+        height: 15px;
+    }
+
+    .main {
+        padding: 10px 10px 14px;
+    }
+
+    .page-title {
+        font-size: 18px;
+    }
+
+    .bottom-nav-item span:not(.count-badge) {
+        font-size: 9px;
+    }
+}
+
+
+/* ============================================================
+   ЛАНДШАФТ ТЕЛЕФОНА
+   ============================================================ */
+@media (max-width: 900px) and (orientation: landscape) and (max-height: 500px) {
+    .bottom-nav {
+        height: 48px;
+    }
+
+    .player {
+        flex-direction: row;
+        padding: 6px 12px;
+        gap: 12px;
+        align-items: center;
+    }
+
+    .player-left {
+        width: auto;
+        flex: 1;
+        min-width: 0;
+    }
+
+    .player-cover {
+        width: 32px;
+        height: 32px;
+    }
+
+    .player-controls {
+        width: auto;
+        flex: 0 0 auto;
+        order: 0;
+        gap: 6px;
+    }
+
+    .player-progress {
+        width: auto;
+        flex: 1;
+        order: 0;
+        min-width: 100px;
+    }
+
+    .ctrl-btn.play-btn {
+        width: 38px;
+        height: 38px;
+    }
+}
