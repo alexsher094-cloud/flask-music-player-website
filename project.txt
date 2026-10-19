@@ -1,9 +1,8 @@
-music-player/
-├── app.py
-├── requirements.txt
-├── templates/
-│   └── index.html
-├── static/
-│   ├── style.css
-│   └── app.js
-└── music/         
+flask-music-player-windows/
+├── app.py                 # Ваш текущий Flask-бэкенд (без изменений)
+├── desktop.py             # Новый: точка входа для pywebview, трей, аргументы
+├── file_assoc.py          # Регистрация в реестре (ассоциация файлов)
+├── requirements.txt       # + pywebview, pystray, pillow
+├── templates/ static/     # Без изменений
+└── installer/
+    └── setup.iss          # Скрипт для Inno Setup (создание установщика)

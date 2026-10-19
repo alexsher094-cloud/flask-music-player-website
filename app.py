@@ -12,6 +12,10 @@ app = Flask(__name__)
 MUSIC_DIR = os.path.join(os.path.dirname(__file__), "music")
 ALLOWED_EXT = {".mp3", ".flac", ".m4a", ".ogg", ".opus", ".wav"}
 
+# Файлы, открытые «извне» (двойной клик, «Открыть с помощью», контекстное меню):
+# id -> абсолютный путь. Заполняется из desktop.py, отдаётся теми же роутами.
+EXTERNAL_TRACKS = {}
+
 
 # ============================================================
 # ХЕЛПЕРЫ
@@ -118,6 +122,10 @@ def scan_music() -> list:
 
 
 def find_track_by_id(track_id: str):
+    ext_path = EXTERNAL_TRACKS.get(track_id)
+    if ext_path and os.path.isfile(ext_path):
+        return ext_path
+
     for root, _, files in os.walk(MUSIC_DIR):
         for name in files:
             ext = os.path.splitext(name)[1].lower()

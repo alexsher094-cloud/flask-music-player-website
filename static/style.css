@@ -2021,3 +2021,143 @@ body.theme-light .artist-album-card:hover {
 body.theme-light .eq-bands::-webkit-scrollbar-thumb {
     background: var(--border-2);
 }
+
+/* ============================================================
+   DESKTOP MODE — титлбар в стиле Windows 11 (только в pywebview)
+   Перетаскивание/ресайз/снап делает система (см. desktop.py),
+   здесь — только внешний вид.
+   ============================================================ */
+.titlebar {
+    display: none;
+}
+
+body.desktop-mode {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+}
+
+body.desktop-mode .app {
+    flex: 1 !important;
+    min-height: 0;
+    height: auto !important;
+}
+
+body.desktop-mode .titlebar {
+    display: flex;
+    align-items: stretch;
+    justify-content: space-between;
+    height: 32px;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 1000;
+    padding-left: 12px;
+    background: var(--bg-elev);
+    border-bottom: 1px solid var(--border);
+    font-family: "Segoe UI Variable Text", "Segoe UI", var(--font);
+    cursor: default;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+body.desktop-mode .titlebar-brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+}
+
+body.desktop-mode .titlebar-logo {
+    width: 16px;
+    height: 16px;
+    color: var(--accent);
+    flex-shrink: 0;
+}
+
+body.desktop-mode .titlebar-title {
+    font-size: 12px;
+    font-weight: 400;
+    letter-spacing: 0;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ----- кнопки управления окном ----- */
+body.desktop-mode .titlebar-controls {
+    display: flex;
+    align-items: stretch;
+    flex-shrink: 0;
+}
+
+body.desktop-mode .titlebar-btn {
+    width: 46px;
+    height: 100%;
+    display: grid;
+    place-items: center;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text);
+    cursor: default;
+    outline: none;
+}
+
+body.desktop-mode .tb-glyph {
+    font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+    font-size: 10px;
+    line-height: 1;
+    pointer-events: none;
+}
+
+body.desktop-mode .titlebar-btn:hover {
+    background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+body.desktop-mode .titlebar-btn:active {
+    background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+
+body.desktop-mode .titlebar-btn-close:hover {
+    background: #c42b1c;
+    color: #fff;
+}
+
+body.desktop-mode .titlebar-btn-close:active {
+    background: rgba(196, 43, 28, 0.9);
+    color: #fff;
+}
+
+/* ----- окно неактивно (как в системных окнах) ----- */
+body.desktop-mode.window-inactive .titlebar-title,
+body.desktop-mode.window-inactive .titlebar-btn {
+    color: var(--text-3);
+}
+
+body.desktop-mode.window-inactive .titlebar-logo {
+    opacity: 0.55;
+}
+
+/* ----- невидимые хэндлы для ресайза (создаются из app.js) ----- */
+.rz {
+    position: fixed;
+    z-index: 100000;
+}
+
+.rz-left   { left: 0;   top: 10px;  bottom: 10px; width: 5px;  cursor: ew-resize; }
+.rz-right  { right: 0;  top: 10px;  bottom: 10px; width: 5px;  cursor: ew-resize; }
+.rz-top    { top: 0;    left: 10px; right: 10px;  height: 5px; cursor: ns-resize; }
+.rz-bottom { bottom: 0; left: 10px; right: 10px;  height: 5px; cursor: ns-resize; }
+
+.rz-topleft     { top: 0;    left: 0;  width: 10px; height: 10px; cursor: nwse-resize; }
+.rz-bottomright { bottom: 0; right: 0; width: 10px; height: 10px; cursor: nwse-resize; }
+.rz-topright    { top: 0;    right: 0; width: 10px; height: 10px; cursor: nesw-resize; }
+.rz-bottomleft  { bottom: 0; left: 0;  width: 10px; height: 10px; cursor: nesw-resize; }
+
+body.maximized .rz {
+    display: none;
+}

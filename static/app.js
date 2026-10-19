@@ -90,8 +90,6 @@ const THEMES = {
         colors: { bg: 12, bgElev: 16, surface: 20, hover: 26, active: 32, text: 97, text2: 72, text3: 52 },
         preview: { sidebar: "#1f1611", surface: "#2a1e18", accent: "#f97316" },
     },
-
-    /* ========= СВЕТЛЫЕ ТЕМЫ — с контрастным распределением яркости ========= */
     light: {
         label: "Light",
         hue: 240, sat: 10,
@@ -198,16 +196,12 @@ function applyTheme() {
     const brightnessMul = t.brightness / 20;
     const adjustL = (l) => {
         if (preset.isLight) {
-            // Светлая тема: brightness двигает lightness к белому (вверх)
-            // или к чёрному (вниз), сохраняя разницу bg < bgElev < surface.
-            // При brightness = 20 (нейтраль) возвращается исходный l.
-            const norm = (t.brightness - 20) / 80;   // -0.25 .. 1
+            const norm = (t.brightness - 20) / 80;
             if (norm >= 0) {
                 return Math.min(100, l + (100 - l) * norm * 0.5);
             }
             return Math.max(0, l - l * (-norm) * 0.5);
         }
-        // Тёмная тема — множитель
         return Math.max(0, Math.min(50, l * brightnessMul));
     };
 
@@ -228,7 +222,6 @@ function applyTheme() {
 
     root.style.setProperty("--radius", t.radius + "px");
 
-    /* Тематические тени и overlay */
     if (preset.isLight) {
         root.style.setProperty("--shadow-sm",  "0 1px 3px rgba(0, 0, 0, 0.06)");
         root.style.setProperty("--shadow",     "0 8px 24px rgba(0, 0, 0, 0.10)");
@@ -247,6 +240,7 @@ function applyTheme() {
     body.classList.toggle("no-animations", !t.animations);
 
     syncThemeUI();
+    syncNativeBackground();
 }
 
 function shadeColor(hex, percent) {
@@ -1194,7 +1188,6 @@ function playTrackFromList(track, list) {
         updatePlayIcon();
         highlightCurrent();
 
-        /* Media Session — передаём метаданные в ОС */
         updateMediaSessionMetadata(track);
         if ("mediaSession" in navigator) {
             navigator.mediaSession.playbackState = "playing";
@@ -1328,8 +1321,7 @@ function highlightCurrent() {
 }
 
 /* ============================================================
-   MEDIA SESSION — интеграция с системным плеером
-   (Dynamic Island на iPhone, шторка/локскрин на Android)
+   MEDIA SESSION
    ============================================================ */
 function updateMediaSessionMetadata(track) {
     if (!("mediaSession" in navigator) || !("MediaMetadata" in window)) return;
@@ -1337,10 +1329,7 @@ function updateMediaSessionMetadata(track) {
 
     const artwork = [];
     if (track.hasCover) {
-        // Абсолютный URL — iOS требует именно такой
         const coverUrl = new URL(`/api/cover/${track.id}`, location.origin).href;
-        // Дублируем один и тот же файл под разные размеры:
-        // некоторые версии iOS/Android требуют набор
         artwork.push(
             { src: coverUrl, sizes: "96x96",   type: "image/jpeg" },
             { src: coverUrl, sizes: "128x128", type: "image/jpeg" },
@@ -1839,6 +1828,115 @@ document.addEventListener("keydown", (e) => {
         else if (state.currentArtistKey) $("#back-to-artists").click();
     }
 });
+
+/* ============================================================
+   DESKTOP MODE — кастомный титлбар
+   ------------------------------------------------------------
+   Drag, resize, snap и двойной клик по титлбару выполняет сама
+   Windows (см. desktop.py). JS делает по одному вызову на mousedown
+   и больше ничего не отслеживает — никаких mousemove -> Python.
+   ============================================================ */
+let nativeBgLast = "";
+
+// Цвет подложки окна = фон темы (меньше вспышек при растягивании)
+function syncNativeBackground() {
+    const api = window.pywebview && window.pywebview.api;
+    if (!api || typeof api.set_background !== "function") return;
+    const bg = getComputedStyle(document.body).backgroundColor;
+    if (!bg || bg === nativeBgLast) return;
+    nativeBgLast = bg;
+    api.set_background(bg).catch(() => {});
+}
+
+function initDesktopMode() {
+    const api = window.pywebview && window.pywebview.api;
+    if (!api || typeof api.start_drag !== "function") return;
+    if (document.body.classList.contains("desktop-mode")) return;
+
+    document.body.classList.add("desktop-mode");
+
+    const titlebar = document.getElementById("titlebar");
+    const btnMax   = document.getElementById("tb-maximize");
+    const glyphMax = document.getElementById("tb-glyph-maximize");
+
+    // ---------- состояние окна (приходит из Python) ----------
+    function setMaximized(isMax) {
+        document.body.classList.toggle("maximized", isMax);
+        if (glyphMax) glyphMax.textContent = isMax ? "\uE923" : "\uE922";
+        if (btnMax) {
+            const label = isMax ? "Восстановить" : "Развернуть";
+            btnMax.title = label;
+            btnMax.setAttribute("aria-label", label);
+        }
+    }
+
+    window.__onWindowState = (isMax, isActive) => {
+        setMaximized(!!isMax);
+        document.body.classList.toggle("window-inactive", !isActive);
+    };
+
+    api.is_maximized().then(setMaximized).catch(() => {});
+
+    // ---------- кнопки ----------
+    const bindBtn = (id, fn) => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener("click", fn);
+    };
+    bindBtn("tb-minimize", () => api.minimize());
+    bindBtn("tb-maximize", () => api.toggle_maximize());
+    bindBtn("tb-close",    () => api.close());
+
+    // ---------- перетаскивание за титлбар ----------
+    if (titlebar) {
+        titlebar.addEventListener("mousedown", (e) => {
+            if (e.button !== 0) return;
+            e.preventDefault();                       // без выделения/фокуса
+            if (e.target.closest(".titlebar-controls")) return;
+            api.start_drag();
+        });
+        titlebar.addEventListener("contextmenu", (e) => e.preventDefault());
+    }
+
+    // ---------- resize: невидимые хэндлы по краям окна ----------
+    const EDGES = {
+        left: 10, right: 11, top: 12, topleft: 13,
+        topright: 14, bottom: 15, bottomleft: 16, bottomright: 17,
+    };
+    for (const [name, code] of Object.entries(EDGES)) {
+        const h = document.createElement("div");
+        h.className = "rz rz-" + name;
+        h.addEventListener("mousedown", (e) => {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            e.stopPropagation();
+            api.start_resize(code);
+        });
+        document.body.appendChild(h);
+    }
+
+    syncNativeBackground();
+}
+
+if (window.pywebview && window.pywebview.api) {
+    initDesktopMode();
+}
+window.addEventListener("pywebviewready", initDesktopMode);
+
+/* ============================================================
+   ОТКРЫТИЕ ФАЙЛОВ ИЗВНЕ (вызывается из desktop.py)
+   items — список треков {id, title, artist, ...}; mode: play | enqueue
+   ============================================================ */
+window.__openExternal = function (items, mode) {
+    if (!Array.isArray(items) || !items.length) return;
+
+    if (mode === "enqueue" && state.currentTrackId && state.currentQueue.length) {
+        // новый массив, чтобы не менять списки библиотеки
+        state.currentQueue = [...state.currentQueue, ...items];
+        buildShuffleOrder();
+        return;
+    }
+    playTrackFromList(items[0], items);
+};
 
 /* ============================================================
    INIT
