@@ -1,7 +1,9 @@
 Flask==3.1.3
 mutagen==1.47.0
+watchdog
 pywebview
 pystray
 pillow
+pypresence>=4.6,<5
 pywin32; sys_platform == "win32"
 comtypes; sys_platform == "win32"

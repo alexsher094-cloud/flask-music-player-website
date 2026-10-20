@@ -353,6 +353,43 @@
                     </div>
                 </div>
 
+                <!-- DISCORD -->
+                <div class="theme-section hidden" id="discord-section">
+                    <div class="theme-header">
+                        <div class="theme-header-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <rect x="3" y="4" width="18" height="12" rx="2"/>
+                                <path d="M8 20h8M12 16v4"/>
+                            </svg>
+                        </div>
+                        <div class="theme-header-text">
+                            <h2>Discord</h2>
+                            <p>Показывать в профиле, что сейчас играет</p>
+                        </div>
+                        <label class="eq-toggle" title="Включить / выключить">
+                            <input type="checkbox" id="discord-enabled">
+                            <span class="eq-toggle-track"></span>
+                        </label>
+                    </div>
+
+                    <div class="theme-custom">
+                        <div class="theme-row">
+                            <label class="theme-row-label" for="discord-client-id">
+                                <span>Application ID</span>
+                                <span class="theme-row-hint">ID приложения из Discord Developer Portal</span>
+                            </label>
+                            <input type="text" id="discord-client-id" class="settings-input"
+                                   placeholder="123456789012345678" inputmode="numeric"
+                                   autocomplete="off" spellcheck="false">
+                        </div>
+                        <div class="discord-status" id="discord-status"></div>
+                    </div>
+
+                    <div class="theme-footer">
+                        <button class="btn-reset-eq" id="discord-save">Сохранить</button>
+                    </div>
+                </div>
+
             </div>
         </div>
 

@@ -11,6 +11,7 @@ music/*
 
 __pycache__/
 *.py[cod]
+Music.ico
 *$py.class
 *.so
 *.egg-info/

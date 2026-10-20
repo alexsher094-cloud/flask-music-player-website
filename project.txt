@@ -1,8 +1,9 @@
 flask-music-player-windows/
 ├── app.py                 # Ваш текущий Flask-бэкенд (без изменений)
 ├── desktop.py             # Новый: точка входа для pywebview, трей, аргументы
+├── presence.py            # Discord Rich Presence (отдельный поток)
 ├── file_assoc.py          # Регистрация в реестре (ассоциация файлов)
-├── requirements.txt       # + pywebview, pystray, pillow
+├── requirements.txt       # + pywebview, pystray, pillow, pypresence
 ├── templates/ static/     # Без изменений
 └── installer/
     └── setup.iss          # Скрипт для Inno Setup (создание установщика)

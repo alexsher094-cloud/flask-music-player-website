@@ -2244,3 +2244,50 @@ body.mini-mode .player-progress {
 }
 
 body.mini-mode .time { font-size: 10.5px; min-width: 30px; }
+/* ============================================================
+   DISCORD PRESENCE
+   ============================================================ */
+.settings-input {
+    flex: 0 1 320px;
+    min-width: 0;
+    padding: 10px 12px;
+    background: var(--bg-elev);
+    border: 1px solid var(--border-2);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 13.5px;
+    outline: none;
+    transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+}
+
+.settings-input::placeholder { color: var(--text-3); }
+
+.settings-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.discord-status {
+    padding: 0 0 14px;
+    font-size: 13px;
+    color: var(--text-3);
+    min-height: 18px;
+    overflow-wrap: anywhere;
+}
+
+.discord-status.ok { color: #4ade80; }
+
+#discord-section .theme-footer { padding-top: 0; }
+
+@media (max-width: 720px) {
+    #discord-section .theme-row {
+        flex-wrap: wrap;
+        align-items: flex-start;
+    }
+
+    .settings-input {
+        flex: 1 1 100%;
+        max-width: none;
+    }
+}

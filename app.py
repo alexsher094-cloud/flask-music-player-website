@@ -1,32 +1,34 @@
 # app.py
 import os
-import hashlib
-from flask import Flask, jsonify, render_template, send_file, abort, Response
+import logging
+from flask import (Flask, jsonify, render_template, request, send_file,
+                   abort)
 from mutagen import File as MutagenFile
 from mutagen.id3 import ID3
 from mutagen.flac import FLAC
 from mutagen.mp4 import MP4
 
+from library import Library, track_id_for  # noqa: F401  (track_id_for реэкспортируется для desktop.py)
+
 app = Flask(__name__)
 
-MUSIC_DIR = os.path.join(os.path.dirname(__file__), "music")
+MUSIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "music")
 ALLOWED_EXT = {".mp3", ".flac", ".m4a", ".ogg", ".opus", ".wav"}
 
 # Файлы, открытые «извне» (двойной клик, «Открыть с помощью», контекстное меню):
 # id -> абсолютный путь. Заполняется из desktop.py, отдаётся теми же роутами.
 EXTERNAL_TRACKS = {}
 
-# Кэш id -> абсолютный путь (для jump list и других быстрых обращений).
-_PATH_CACHE = {}
+
+def _data_dir() -> str:
+    # совпадает с instance.data_dir() на Windows: %APPDATA%\Music
+    base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    return os.path.join(base, "Music")
 
 
 # ============================================================
-# ХЕЛПЕРЫ
+# ТЕГИ
 # ============================================================
-def track_id_for(path: str) -> str:
-    return hashlib.md5(path.encode("utf-8")).hexdigest()[:16]
-
-
 def extract_cover(path: str):
     """Возвращает (bytes, mime) обложки из тегов или (None, None)."""
     try:
@@ -92,82 +94,30 @@ def extract_metadata(path: str) -> dict:
     return data
 
 
-def scan_music() -> list:
-    tracks = []
-    if not os.path.isdir(MUSIC_DIR):
-        return tracks
-
-    for root, _, files in os.walk(MUSIC_DIR):
-        for name in sorted(files):
-            ext = os.path.splitext(name)[1].lower()
-            if ext not in ALLOWED_EXT:
-                continue
-
-            path = os.path.join(root, name)
-            rel_path = os.path.relpath(path, MUSIC_DIR)
-
-            meta = extract_metadata(path)
-            covers = extract_cover(path)
-
-            tracks.append({
-                "id": track_id_for(rel_path),
-                "file": rel_path,
-                "title": meta["title"],
-                "artist": meta["artist"],
-                "album": meta["album"],
-                "duration": meta["duration"],
-                "date": meta["date"],
-                "mtime": meta["mtime"],
-                "hasCover": covers[0] is not None,
-            })
-
-    return tracks
+# ============================================================
+# БИБЛИОТЕКА (SQLite-кэш + превью + watchdog)
+# ============================================================
+# Потоки стартуют только после lib.start() — см. desktop.py / __main__ ниже.
+lib = Library(
+    music_dir=MUSIC_DIR,
+    db_path=os.path.join(_data_dir(), "library.db"),
+    cover_dir=os.path.join(_data_dir(), "covers"),
+    read_meta=extract_metadata,
+    read_cover=extract_cover,
+    allowed_ext=ALLOWED_EXT,
+)
 
 
 def find_track_by_id(track_id: str):
     ext_path = EXTERNAL_TRACKS.get(track_id)
     if ext_path and os.path.isfile(ext_path):
         return ext_path
-
-    for root, _, files in os.walk(MUSIC_DIR):
-        for name in files:
-            ext = os.path.splitext(name)[1].lower()
-            if ext not in ALLOWED_EXT:
-                continue
-            path = os.path.join(root, name)
-            rel_path = os.path.relpath(path, MUSIC_DIR)
-            if track_id_for(rel_path) == track_id:
-                return path
-    return None
+    return lib.path_for_id(track_id)
 
 
-def find_track_path(track_id: str):
-    """
-    Кэшированный поиск абсолютного пути по id.
-    Используется для построения Jump List (см. desktop.py / windows_integration.py).
-    """
-    if track_id in _PATH_CACHE:
-        p = _PATH_CACHE[track_id]
-        return p if p and os.path.isfile(p) else None
-
-    ext_path = EXTERNAL_TRACKS.get(track_id)
-    if ext_path and os.path.isfile(ext_path):
-        _PATH_CACHE[track_id] = ext_path
-        return ext_path
-
-    for root, _, files in os.walk(MUSIC_DIR):
-        for name in files:
-            ext = os.path.splitext(name)[1].lower()
-            if ext not in ALLOWED_EXT:
-                continue
-            path = os.path.join(root, name)
-            rel_path = os.path.relpath(path, MUSIC_DIR)
-            if track_id_for(rel_path) == track_id:
-                _PATH_CACHE[track_id] = path
-                return path
-
-    _PATH_CACHE[track_id] = None
-    return None
+# Jump list (desktop.py) раньше пользовался отдельным кэшем путей;
+# теперь это тот же быстрый поиск по индексу в БД.
+find_track_path = find_track_by_id
 
 
 # ============================================================
@@ -180,7 +130,18 @@ def index():
 
 @app.route("/api/tracks")
 def api_tracks():
-    return jsonify({"tracks": scan_music()})
+    return jsonify({"tracks": lib.tracks(), "version": lib.version})
+
+
+@app.route("/api/library/version")
+def api_library_version():
+    return jsonify({"version": lib.version})
+
+
+@app.route("/api/library/rescan", methods=["POST"])
+def api_library_rescan():
+    lib.request_rescan()
+    return jsonify(ok=True)
 
 
 @app.route("/api/stream/<track_id>")
@@ -205,22 +166,44 @@ def api_stream(track_id):
 
 @app.route("/api/cover/<track_id>")
 def api_cover(track_id):
-    path = find_track_by_id(track_id)
-    if not path:
+    """
+    /api/cover/<id>?s=128         — превью (64/128/256/512/1024, по умолчанию 512)
+    /api/cover/<id>?s=128&v=<h>   — то же, но с «вечным» кэшем браузера
+                                    (h — поле `cover` из /api/tracks)
+    Всегда отдаётся JPEG.
+    """
+    size = request.args.get("s", type=int)
+
+    ext_path = EXTERNAL_TRACKS.get(track_id)
+    if ext_path and os.path.isfile(ext_path):
+        thumb = lib.thumb_path(ext_path, size)
+    else:
+        info = lib.get(track_id)
+        if not info:
+            abort(404)
+        thumb = lib.thumb_path(info["path"], size, info["cover"])
+
+    if not thumb:
         abort(404)
 
-    data, mime = extract_cover(path)
-    if not data:
-        abort(404)
-
-    return Response(data, mimetype=mime or "image/jpeg")
+    resp = send_file(thumb, mimetype="image/jpeg", conditional=True, max_age=0)
+    if request.args.get("v"):
+        # имя файла превью = хэш содержимого, значит при смене обложки сменится и v
+        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     if not os.path.isdir(MUSIC_DIR):
         os.makedirs(MUSIC_DIR)
     debug = os.environ.get("FLASK_DEBUG", "0") == "1"
+
+    # с reloader'ом процесс запускается дважды — библиотеку стартуем только в рабочем
+    if not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        lib.start()
+
     print(f" Музыка: {MUSIC_DIR}")
-    print(f" Найдено треков: {len(scan_music())}")
+    print(f" Кэш:    {_data_dir()}")
     print(f" Debug: {'ON' if debug else 'OFF'}")
     app.run(host="0.0.0.0", port=5000, debug=debug)

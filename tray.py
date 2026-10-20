@@ -55,6 +55,8 @@ class Tray:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Закрывать в трей", self._toggle_close_to_tray,
                              checked=lambda it: bool(c.settings.get("close_to_tray", True))),
+            pystray.MenuItem("Discord Rich Presence", self._toggle_discord,
+                             checked=lambda it: bool(c.settings.get("discord_presence", True))),
             pystray.MenuItem("Запускать вместе с Windows", self._toggle_autostart,
                              checked=lambda it: file_assoc.is_autostart()),
             pystray.MenuItem("Сопоставить с аудиофайлами…", self._register),
@@ -87,6 +89,12 @@ class Tray:
 
     def _toggle_autostart(self, icon, item):
         file_assoc.set_autostart(not file_assoc.is_autostart())
+        icon.update_menu()
+
+    def _toggle_discord(self, icon, item):
+        enabled = not self._c.settings.get("discord_presence", True)
+        self._c.set_discord_config(
+            enabled, self._c.settings.get("discord_client_id", ""))
         icon.update_menu()
 
     def _register(self, icon, item):

@@ -28,7 +28,8 @@ from flask import abort, jsonify, request
 import file_assoc
 import instance
 from app import (ALLOWED_EXT, EXTERNAL_TRACKS, app, extract_cover,
-                 extract_metadata, track_id_for)
+                 extract_metadata, track_id_for, lib)
+from presence import DiscordPresence
 from windows_integration import WindowsIntegration, ensure_icon_file
 
 
@@ -262,6 +263,10 @@ class WindowApi:
 
         self._close_cb = None
         self._on_installed = None
+
+        self._presence = None
+        self._discord_status = None
+        self._discord_set = None
 
         self._integration = None
         self.eval = self._eval_js_safe
@@ -530,6 +535,25 @@ class WindowApi:
             return True
         return False
 
+    # ---------- Discord Rich Presence ----------
+    def update_presence(self, data) -> bool:
+        if self._presence is not None and isinstance(data, dict):
+            self._presence.update(data)
+        return True
+
+    def clear_presence(self) -> bool:
+        if self._presence is not None:
+            self._presence.clear()
+        return True
+
+    def get_discord_config(self) -> dict:
+        cb = self._discord_status
+        return cb() if cb else {}
+
+    def set_discord_config(self, enabled: bool, client_id: str = "") -> dict:
+        cb = self._discord_set
+        return cb(bool(enabled), str(client_id or "")) if cb else {}
+
     def update_recent_tracks(self, paths) -> bool:
         if self._integration:
             self._integration.update_recent_tracks(list(paths or []))
@@ -627,6 +651,45 @@ class AppController:
         self._last_play = 0.0
         self._pending_open = None
         self._pending_maximize = False
+        self.presence = None
+
+    # ---------- Discord Rich Presence ----------
+    def init_presence(self):
+        try:
+            self.presence = DiscordPresence(
+                client_id=(os.environ.get("MUSIC_DISCORD_CLIENT_ID")
+                           or self.settings.get("discord_client_id", "")),
+                enabled=bool(self.settings.get("discord_presence", True)),
+                large_image=self.settings.get("discord_large_image", ""),
+            )
+            self.presence.start()
+        except Exception as e:
+            _log(f"discord presence: {e}")
+            self.presence = None
+
+    def discord_status(self) -> dict:
+        if self.presence is None:
+            return {
+                "available": False,
+                "enabled": bool(self.settings.get("discord_presence", True)),
+                "client_id": self.settings.get("discord_client_id", ""),
+                "connected": False,
+                "error": "pypresence не установлен",
+            }
+        status = self.presence.status()
+        status["enabled"] = bool(self.settings.get("discord_presence", True))
+        status["client_id"] = (self.settings.get("discord_client_id", "")
+                               or os.environ.get("MUSIC_DISCORD_CLIENT_ID", ""))
+        return status
+
+    def set_discord_config(self, enabled: bool, client_id: str) -> dict:
+        cid = "".join(str(client_id or "").split())
+        self.settings["discord_presence"] = bool(enabled)
+        self.settings["discord_client_id"] = cid
+        instance.save_settings(self.settings)
+        if self.presence is not None:
+            self.presence.configure(client_id=cid, enabled=bool(enabled))
+        return self.discord_status()
 
     def eval(self, js: str):
         def run():
@@ -741,14 +804,27 @@ class AppController:
         except Exception:
             pass
 
-        # 2) состояние окна
+        # 2) библиотека: остановить watcher и корректно закрыть SQLite (WAL)
+        try:
+            lib.stop()
+        except Exception:
+            pass
+
+        # 3) Discord: убрать активность и закрыть IPC-канал
+        try:
+            if self.presence is not None:
+                self.presence.shutdown()
+        except Exception:
+            pass
+
+        # 4) состояние окна
         try:
             self.save_geometry()
         except Exception:
             pass
         instance.clear_info()
 
-        # 3) трей: остановить ровно один раз и обнулить ссылку
+        # 5) трей: остановить ровно один раз и обнулить ссылку
         tray = self.tray
         self.tray = None
         if tray:
@@ -757,7 +833,7 @@ class AppController:
             except Exception:
                 pass
 
-        # 4) окно — в отдельном потоке, чтобы не блокировать текущий
+        # 6) окно — в отдельном потоке, чтобы не блокировать текущий
         if self.window:
             threading.Thread(target=self.window.destroy, daemon=True).start()
 
@@ -865,6 +941,14 @@ def main() -> None:
 
     controller.token = secrets.token_hex(16)
 
+    # Discord Rich Presence: свой поток, плеер его не ждёт
+    controller.init_presence()
+
+    # Библиотека: уведомлять UI об изменениях и запустить кэш/watcher'а
+    lib.on_change = lambda: controller.eval(
+        "window.__onLibraryChanged && window.__onLibraryChanged()")
+    lib.start()
+
     flask_thread = threading.Thread(target=run_flask, args=(port,), daemon=True)
     flask_thread.start()
 
@@ -890,6 +974,9 @@ def main() -> None:
     api = WindowApi()
     api._close_cb = controller.request_close
     api._on_installed = controller.restore_geometry
+    api._presence = controller.presence
+    api._discord_status = controller.discord_status
+    api._discord_set = controller.set_discord_config
     controller.api = api
 
     window = webview.create_window(

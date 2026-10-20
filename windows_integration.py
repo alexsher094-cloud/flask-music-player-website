@@ -222,27 +222,42 @@ def _make_app_icon(size: int = 256):
 
 def ensure_icon_file() -> str:
     """
-    Сохраняет .ico приложения в %APPDATA%\\Music\\Music.ico (многоразмерный).
-    Используется и для WM_SETICON/SetClassLong, и для IconResource в AUMID —
-    иначе кнопка на панели задач показывает иконку python.exe.
+    Сохраняет .ico приложения (многоразмерный).
+
+    ВАЖНО: Store-версия Python (Microsoft Store) виртуализирует запись в
+    %APPDATA%: файл попадает в Packages\\...\\LocalCache\\Roaming, а Explorer
+    ищет его по настоящему пути — файла нет, и кнопка на панели задач
+    показывает иконку python.exe (из IconResource в AUMID).
+
+    Поэтому сначала пишем в папку приложения (не виртуализируется),
+    затем в корень профиля пользователя, и только потом в %APPDATA%.
     Возвращает путь или "" при ошибке.
     """
-    try:
-        appdata = os.environ.get("APPDATA") or os.path.expanduser("~")
-        folder = os.path.join(appdata, "Music")
-        os.makedirs(folder, exist_ok=True)
-        path = os.path.join(folder, "Music.ico")
+    if getattr(sys, "frozen", False):
+        app_dir = os.path.dirname(sys.executable)
+    else:
+        app_dir = os.path.dirname(os.path.abspath(__file__))
 
-        base = _make_app_icon(256)
-        base.save(
-            path, format="ICO",
-            sizes=[(16, 16), (24, 24), (32, 32), (48, 48),
-                   (64, 64), (128, 128), (256, 256)],
-        )
-        return path
-    except Exception as e:
-        print(f"[Icon] save failed: {e}", file=sys.stderr)
-        return ""
+    candidates = [
+        app_dir if app_dir else None,
+        os.path.expanduser("~"),
+        os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "Music"),
+    ]
+
+    sizes = [(16, 16), (24, 24), (32, 32), (48, 48),
+             (64, 64), (128, 128), (256, 256)]
+    for folder in candidates:
+        if not folder:
+            continue
+        try:
+            if folder != app_dir:
+                os.makedirs(folder, exist_ok=True)
+            path = os.path.join(folder, "Music.ico")
+            _make_app_icon(256).save(path, format="ICO", sizes=sizes)
+            return path
+        except (OSError, ValueError) as e:
+            print(f"[Icon] save failed ({folder}: {e})", file=sys.stderr)
+    return ""
 
 
 def _make_icon_image(kind: str, size: int = 16):

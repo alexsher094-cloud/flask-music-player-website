@@ -18,6 +18,9 @@ const state = {
     albumBackTarget: "albums",
     albumBackArtistKey: null,
     currentTrackId: null,
+    currentTrack: null,
+    switchingTrack: false,
+    libVersion: -1,   // -1 = ещё ни один ответ /api/tracks не применяли
     currentQueue: [],
     isPlaying: false,
     isSeeking: false,
@@ -47,6 +50,45 @@ const state = {
    ============================================================ */
 function winApi(name) {
     return (window.pywebview && window.pywebview.api && window.pywebview.api[name]) || null;
+}
+
+/* ============================================================
+   DISCORD RICH PRESENCE
+   ============================================================ */
+// Отправляем снимок только на событиях (старт/пауза/seek), а не каждую секунду:
+// Discord сам считает таймер по start/end.
+function syncPresence() {
+    const api = winApi("update_presence");
+    const track = state.currentTrack;
+    if (!api || !track) return;
+
+    const duration = Number.isFinite(audio.duration) && audio.duration > 0
+        ? audio.duration
+        : (track.duration || 0);
+
+    api({
+        title: track.title,
+        artist: track.artist,
+        album: track.album,
+        duration,
+        position: Number.isFinite(audio.currentTime) ? audio.currentTime : 0,
+        playing: !audio.paused && !audio.ended,
+    }).catch(() => {});
+}
+
+function clearPresence() {
+    const api = winApi("clear_presence");
+    if (api) api().catch(() => {});
+}
+
+/* ============================================================
+   COVER URLS
+   ============================================================ */
+// s= округляется сервером вверх до 64/128/256/512/1024;
+// v= хэш обложки (track.cover) — вечный кэш браузера,
+//    без v сервер отвечает 304/200 по свежести файла.
+function coverUrl(id, size = 512, v = "") {
+    return `/api/cover/${id}?s=${size}${v ? `&v=${v}` : ""}`;
 }
 
 /* ============================================================
@@ -613,6 +655,10 @@ async function loadTracks() {
     try {
         const res = await fetch("/api/tracks");
         const data = await res.json();
+        // Если список уже пуст — применяем ответ всегда: иначе один
+        // неудачный первый запрос оставляет UI пустым до перезапуска.
+        if (state.tracks.length && data.version === state.libVersion) return;
+        state.libVersion = data.version;
         state.tracks = data.tracks || [];
         $("#track-count").textContent = state.tracks.length;
 
@@ -877,7 +923,7 @@ function renderTrackRows(container, tracks) {
         if (track.id === state.currentTrackId) row.classList.add("playing");
 
         const coverHtml = track.hasCover
-            ? `<img src="/api/cover/${track.id}" alt="" loading="lazy">`
+            ? `<img src="${coverUrl(track.id, 128, track.cover)}" alt="" loading="lazy">`
             : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>`;
 
         const favActive = isFavorite(track.id) ? "active" : "";
@@ -920,7 +966,7 @@ function renderAlbums() {
         card.style.animationDelay = (i * 0.03) + "s";
 
         const coverHtml = album.coverTrackId
-            ? `<img src="/api/cover/${album.coverTrackId}" alt="" loading="lazy">` : "";
+            ? `<img src="${coverUrl(album.coverTrackId, 256)}" alt="" loading="lazy">` : "";
         const coverStyle = album.coverTrackId ? ""
             : `style="background: ${purpleGradient(album.name + album.artist)}"`;
 
@@ -956,7 +1002,7 @@ function renderArtists() {
         card.style.animationDelay = (i * 0.03) + "s";
 
         const avatarHtml = artist.avatarTrackId
-            ? `<img src="/api/cover/${artist.avatarTrackId}" alt="" loading="lazy">`
+            ? `<img src="${coverUrl(artist.avatarTrackId, 256)}" alt="" loading="lazy">`
             : getInitials(artist.name);
         const avatarStyle = artist.avatarTrackId ? "" : `background: ${artistGradient(artist.name)}`;
 
@@ -993,7 +1039,7 @@ function closeAlbum() {
 function renderAlbumDetail(album) {
     const coverEl = $("#album-hero-cover");
     if (album.coverTrackId) {
-        coverEl.innerHTML = `<img src="/api/cover/${album.coverTrackId}" alt="">`;
+        coverEl.innerHTML = `<img src="${coverUrl(album.coverTrackId, 512)}" alt="">`;
         coverEl.style.background = "";
     } else {
         coverEl.innerHTML = "";
@@ -1044,7 +1090,7 @@ function closeArtist() {
 function renderArtistDetail(artist) {
     const avatarEl = $("#artist-hero-avatar");
     if (artist.avatarTrackId) {
-        avatarEl.innerHTML = `<img src="/api/cover/${artist.avatarTrackId}" alt="">`;
+        avatarEl.innerHTML = `<img src="${coverUrl(artist.avatarTrackId, 512)}" alt="">`;
         avatarEl.style.background = "";
     } else {
         avatarEl.textContent = getInitials(artist.name);
@@ -1102,7 +1148,7 @@ function renderArtistAlbums(artist) {
         card.className = "artist-album-card";
 
         const coverInner = album.coverTrackId
-            ? `<img src="/api/cover/${album.coverTrackId}" alt="" loading="lazy">`
+            ? `<img src="${coverUrl(album.coverTrackId, 256)}" alt="" loading="lazy">`
             : "";
 
         const coverStyle = album.coverTrackId ? ""
@@ -1187,10 +1233,14 @@ function playTrackFromList(track, list) {
     }
 
     state.currentTrackId = track.id;
+    state.currentTrack = track;
+    state.switchingTrack = true;
     audio.src = `/api/stream/${track.id}`;
     audio.volume = state.volume;
     audio.play().then(() => {
+        if (state.currentTrackId !== track.id) return;   // уже переключили трек
         state.isPlaying = true;
+        state.switchingTrack = false;
         updatePlayerUI(track);
         updatePlayIcon();
         highlightCurrent();
@@ -1204,7 +1254,13 @@ function playTrackFromList(track, list) {
             navigator.mediaSession.playbackState = "playing";
         }
         updatePositionState();
-    }).catch((e) => console.error("Play error:", e));
+        syncPresence();
+    }).catch((e) => {
+        if (state.currentTrackId !== track.id) return;   // это отменённый старый трек
+        state.switchingTrack = false;
+        console.error("Play error:", e);
+        clearPresence();
+    });
 }
 
 function playNext(manual = false) {
@@ -1233,6 +1289,7 @@ function playNext(manual = false) {
                 audio.pause();
                 state.isPlaying = false;
                 updatePlayIcon();
+                clearPresence();
                 return;
             }
             buildShuffleOrder();
@@ -1246,6 +1303,7 @@ function playNext(manual = false) {
                 audio.pause();
                 state.isPlaying = false;
                 updatePlayIcon();
+                clearPresence();
                 return;
             }
             nextIdx = 0;
@@ -1306,12 +1364,13 @@ function updatePlayIcon() {
 }
 
 function updatePlayerUI(track) {
+    state.currentTrack = track;
     $("#player-title").textContent = track.title;
     $("#player-artist").textContent = track.artist + (track.album ? " · " + track.album : "");
 
     const cover = $("#player-cover");
     if (track.hasCover) {
-        cover.innerHTML = `<img src="/api/cover/${track.id}" alt="">`;
+        cover.innerHTML = `<img src="${coverUrl(track.id, 512, track.cover)}" alt="">`;
         cover.classList.add("has-cover");
     } else {
         cover.innerHTML = `
@@ -1343,14 +1402,15 @@ function updateMediaSessionMetadata(track) {
 
     const artwork = [];
     if (track.hasCover) {
-        const coverUrl = new URL(`/api/cover/${track.id}`, location.origin).href;
+        // сервер снапит s= вверх: просим реально существующие размеры
+        const art = (px) => coverUrl(track.id, px, track.cover);
         artwork.push(
-            { src: coverUrl, sizes: "96x96",   type: "image/jpeg" },
-            { src: coverUrl, sizes: "128x128", type: "image/jpeg" },
-            { src: coverUrl, sizes: "192x192", type: "image/jpeg" },
-            { src: coverUrl, sizes: "256x256", type: "image/jpeg" },
-            { src: coverUrl, sizes: "384x384", type: "image/jpeg" },
-            { src: coverUrl, sizes: "512x512", type: "image/jpeg" }
+            { src: art(128), sizes: "96x96",   type: "image/jpeg" },
+            { src: art(128), sizes: "128x128", type: "image/jpeg" },
+            { src: art(256), sizes: "192x192", type: "image/jpeg" },
+            { src: art(256), sizes: "256x256", type: "image/jpeg" },
+            { src: art(512), sizes: "384x384", type: "image/jpeg" },
+            { src: art(512), sizes: "512x512", type: "image/jpeg" }
         );
     }
 
@@ -1469,17 +1529,25 @@ audio.addEventListener("loadedmetadata", () => {
 audio.addEventListener("ended", () => {
     const _clr = winApi("clear_taskbar_progress");
     if (_clr) _clr().catch(() => {});
+    clearPresence();
     playNext(false);
 });
 
 audio.addEventListener("play", () => {
+    state.switchingTrack = false;
     const _api = winApi("set_playback_state");
     if (_api) _api(true).catch(() => {});
+    syncPresence();
 });
 
 audio.addEventListener("pause", () => {
     const _api = winApi("set_playback_state");
     if (_api) _api(false).catch(() => {});
+    if (!state.switchingTrack && !audio.ended) syncPresence();
+});
+
+audio.addEventListener("seeked", () => {
+    if (!state.switchingTrack) syncPresence();
 });
 
 const progressBar = $("#progress-bar");
@@ -1776,6 +1844,82 @@ function initEQ() {
 }
 
 /* ============================================================
+   DISCORD SETTINGS
+   ============================================================ */
+function initDiscordSettings() {
+    const section = $("#discord-section");
+    if (!section) return;
+
+    if (!winApi("get_discord_config")) {
+        window.addEventListener("pywebviewready", initDiscordSettings, { once: true });
+        return;
+    }
+
+    section.classList.remove("hidden");
+
+    const enabled = $("#discord-enabled");
+    const input = $("#discord-client-id");
+    const status = $("#discord-status");
+    const save = $("#discord-save");
+    if (!enabled || !input || !status || !save) return;
+
+    let inputDirty = false;
+    input.addEventListener("input", () => { inputDirty = true; });
+
+    const render = (cfg) => {
+        if (!cfg) return;
+        enabled.checked = !!cfg.enabled;
+        if (!inputDirty) input.value = cfg.client_id || "";
+
+        let text;
+        if (!cfg.available) {
+            text = "Модуль pypresence не установлен — выполни pip install pypresence.";
+        } else if (!cfg.client_id) {
+            text = "Укажи Application ID и нажми «Сохранить».";
+        } else if (!cfg.enabled) {
+            text = "Выключено.";
+        } else if (cfg.connected) {
+            text = "Подключено к Discord.";
+        } else if (cfg.error) {
+            let err = String(cfg.error);
+            if (/could not find discord/i.test(err)) err = "Discord не запущен.";
+            else if (/invalid/i.test(err)) err = "Проверь Application ID.";
+            text = "Жду Discord… (" + err + ")";
+        } else {
+            text = "Подключение…";
+        }
+
+        status.textContent = text;
+        status.classList.toggle("ok", !!cfg.connected && !!cfg.enabled);
+    };
+
+    const refresh = () => {
+        const api = winApi("get_discord_config");
+        if (api) api().then(render).catch(() => {});
+    };
+
+    const apply = () => {
+        const api = winApi("set_discord_config");
+        if (!api) return;
+        api(enabled.checked, input.value.trim()).then((cfg) => {
+            inputDirty = false;
+            render(cfg);
+        }).catch(() => {});
+    };
+
+    save.addEventListener("click", apply);
+    enabled.addEventListener("change", apply);
+    input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") apply();
+    });
+
+    refresh();
+    setInterval(() => {
+        if (state.view === "settings") refresh();
+    }, 5000);
+}
+
+/* ============================================================
    SEARCH
    ============================================================ */
 const searchInput = $("#search-input");
@@ -2030,6 +2174,13 @@ window.__onMiniMode = function (enabled) {
     document.body.classList.toggle("mini-mode", !!enabled);
 };
 
+// Библиотека изменилась (watchdog/первичный скан) — перезагрузить список
+// с небольшим дебаунсом, чтобы порции скана не дёргали UI каждую секунду.
+window.__onLibraryChanged = function () {
+    clearTimeout(window.__libTimer);
+    window.__libTimer = setTimeout(loadTracks, 300);
+};
+
 // При старте — синхронизируем Jump List с уже сохранёнными id
 function _syncJumpListOnStart() {
     const _api = winApi("update_recent_tracks_by_ids");
@@ -2050,5 +2201,6 @@ updatePlayerFavBtn();
 updateShuffleUI();
 updateRepeatUI();
 initEQ();
+initDiscordSettings();
 setupMediaSessionHandlers();
 loadTracks();

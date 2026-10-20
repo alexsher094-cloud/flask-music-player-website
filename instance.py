@@ -44,7 +44,13 @@ def _settings_path() -> str:
     return os.path.join(data_dir(), "settings.json")
 
 
-_DEFAULTS = {"close_to_tray": True, "window": None}
+_DEFAULTS = {
+    "close_to_tray": True,
+    "window": None,
+    "discord_presence": True,
+    "discord_client_id": "",
+    "discord_large_image": "",
+}
 
 
 def load_settings() -> dict:

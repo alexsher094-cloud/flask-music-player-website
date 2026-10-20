@@ -22,3 +22,18 @@ Before this, I didn’t approach programming with the same level of seriousness 
 I tried to minimize my technical debt as much as I could. Next, 
 I’m going to work on writing full‑fledged standalone versions of this app for Android and Windows, with all the features that these operating systems can offer. 
 To do this, I’ve divided the repository into branches for Web, Android, and Windows. I think you’ll like this app, as I’ve invested a lot of time and effort in it.
+
+## Discord Rich Presence (Windows)
+
+The Windows app can show the current track in your Discord profile.
+
+1. Open https://discord.com/developers/applications and create a new application (the name will be shown in Discord).
+2. Copy its **Application ID**.
+3. In the player, open **Settings → Discord**, paste the ID, enable the toggle and click **Save**.
+4. Keep the Discord desktop app running while you listen.
+
+The Application ID can also be set through the `MUSIC_DISCORD_CLIENT_ID` environment variable or in `%APPDATA%\Music\settings.json` (`discord_client_id`).
+
+Optional: upload a 512×512 image in the Developer Portal → **Rich Presence → Art Assets**, then put its key into `discord_large_image` in `settings.json`. Without it Discord shows the application icon.
+
+If `pypresence` is missing, install it with `pip install -r requirments.txt`.
