@@ -1,26 +1,8 @@
 """
 desktop.py — Windows-версия плеера (pywebview + WebView2).
 
-Как устроен кастомный титлбар
------------------------------
-Окно остаётся frameless, но мы возвращаем ему «настоящие» оконные стили
-(WS_THICKFRAME / MAXIMIZEBOX / MINIMIZEBOX / SYSMENU) и подменяем WndProc:
-
-  * WM_NCCALCSIZE  -> клиентская область = всё окно (никакой системной рамки),
-                      а в развёрнутом состоянии = рабочая область монитора
-                      (нет «вылезания» за экран и перекрытия панели задач).
-  * DWM            -> тень и скруглённые углы Windows 11.
-  * Перетаскивание и ресайз запускает САМА система: JS шлёт один вызов,
-    а в UI-потоке мы делаем ReleaseCapture() + WM_NCLBUTTONDOWN
-    (HTCAPTION / HTLEFT / ...). Отсюда нативные Aero Snap, Win+стрелки,
-    «встряска», восстановление из maximized под курсором, правильные
-    курсоры — и ноль JS->Python вызовов на каждый mousemove.
-
-Почему раньше «не стартовал модальный цикл»: ReleaseCapture() работает
-только из потока, которому принадлежит capture. JS-API вызывается из
-рабочего потока pywebview, поэтому capture не снимался. Здесь API-поток
-лишь делает PostMessage, а всё остальное выполняется в UI-потоке
-внутри WndProc.
+Кастомный титлбар, интеграция с Windows (иконка, медиаклавиши, taskbar,
+jumplist, mini-режим) — см. windows_integration.py и file_assoc.py.
 """
 
 import argparse
@@ -30,14 +12,13 @@ import json
 import os
 import re
 import secrets
+import signal
 import socket
 import sys
 import threading
 import time
 from ctypes import wintypes
 
-# Автовоспроизведение без «жеста пользователя» (открытие файла из Проводника,
-# трей, медиаклавиши). Должно быть выставлено ДО старта WebView2.
 os.environ.setdefault("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
                       "--autoplay-policy=no-user-gesture-required")
 
@@ -48,6 +29,7 @@ import file_assoc
 import instance
 from app import (ALLOWED_EXT, EXTERNAL_TRACKS, app, extract_cover,
                  extract_metadata, track_id_for)
+from windows_integration import WindowsIntegration, ensure_icon_file
 
 
 # ============================================================
@@ -57,7 +39,7 @@ WINDOW_TITLE = "Music"
 WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 800
 WINDOW_MIN   = (460, 500)
-WINDOW_BG    = "#0a0a0c"          # = --bg тёмной темы (до загрузки страницы)
+WINDOW_BG    = "#0a0a0c"
 PORT_START   = 5000
 PORT_END     = 5100
 
@@ -65,8 +47,6 @@ PORT_END     = 5100
 # ============================================================
 # WIN32
 # ============================================================
-# Свои экземпляры DLL: argtypes не «протекают» в pywebview и другие
-# библиотеки, которые пользуются ctypes.windll.*
 user32  = ctypes.WinDLL("user32",  use_last_error=True)
 dwmapi  = ctypes.WinDLL("dwmapi",  use_last_error=True)
 shell32 = ctypes.WinDLL("shell32", use_last_error=True)
@@ -76,24 +56,23 @@ WNDPROC = ctypes.WINFUNCTYPE(
     LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM
 )
 
-# сообщения
 WM_SIZE          = 0x0005
 WM_ACTIVATE      = 0x0006
 WM_NCCALCSIZE    = 0x0083
 WM_NCACTIVATE    = 0x0086
 WM_NCLBUTTONDOWN = 0x00A1
 WM_SYSCOMMAND    = 0x0112
-WM_APP_NCACTION  = 0x8001          # WM_APP + 1: «начни drag/resize» (API-поток -> UI-поток)
+WM_HOTKEY        = 0x0312
+WM_COMMAND       = 0x0111
+WM_APP_NCACTION  = 0x8001
 
 SC_MINIMIZE = 0xF020
 SC_MAXIMIZE = 0xF030
 SC_RESTORE  = 0xF120
 
-# hit-test коды
 HTCAPTION = 2
-HT_RESIZE_CODES = range(10, 18)    # LEFT RIGHT TOP TOPLEFT TOPRIGHT BOTTOM BOTTOMLEFT BOTTOMRIGHT
+HT_RESIZE_CODES = range(10, 18)
 
-# стили / индексы
 GWL_STYLE      = -16
 GWLP_WNDPROC   = -4
 WS_THICKFRAME  = 0x00040000
@@ -139,7 +118,6 @@ class APPBARDATA(ctypes.Structure):
                 ("rc", wintypes.RECT), ("lParam", wintypes.LPARAM)]
 
 
-# Прототипы
 user32.CallWindowProcW.argtypes = [ctypes.c_void_p, wintypes.HWND, wintypes.UINT,
                                    wintypes.WPARAM, wintypes.LPARAM]
 user32.CallWindowProcW.restype  = LRESULT
@@ -171,7 +149,6 @@ user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctyp
                                 ctypes.c_int, ctypes.c_int, wintypes.UINT]
 user32.SetWindowPos.restype  = wintypes.BOOL
 
-# На 64-бит это *Ptr-версии, на 32-бит — обычные
 _get_long = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
 _set_long = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
 _get_long.argtypes = [wintypes.HWND, ctypes.c_int]
@@ -212,11 +189,6 @@ def _log(msg: str) -> None:
 
 
 def _maximized_client_rect(hwnd):
-    """
-    Клиентская область развёрнутого окна = рабочая область монитора
-    (без панели задач). Если панель задач скрывается автоматически —
-    оставляем 1 px по её краю, иначе её невозможно «вытащить».
-    """
     mon = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
     if not mon:
         return None
@@ -229,21 +201,17 @@ def _maximized_client_rect(hwnd):
     right, bottom = mi.rcWork.right, mi.rcWork.bottom
 
     try:
-        for edge in range(4):                       # ABE_LEFT/TOP/RIGHT/BOTTOM
+        for edge in range(4):
             abd = APPBARDATA()
             abd.cbSize = ctypes.sizeof(APPBARDATA)
             abd.hWnd = hwnd
             abd.uEdge = edge
             abd.rc = mi.rcMonitor
             if shell32.SHAppBarMessage(ABM_GETAUTOHIDEBAREX, ctypes.byref(abd)):
-                if edge == 0:
-                    left += 1
-                elif edge == 1:
-                    top += 1
-                elif edge == 2:
-                    right -= 1
-                else:
-                    bottom -= 1
+                if edge == 0:   left   += 1
+                elif edge == 1: top    += 1
+                elif edge == 2: right  -= 1
+                else:           bottom -= 1
     except Exception:
         pass
 
@@ -280,30 +248,36 @@ def run_flask(port: int) -> None:
 # JS API  +  подмена WndProc
 # ============================================================
 class WindowApi:
-    """
-    Публичные методы (без _) доступны из JS как window.pywebview.api.*
-    Всё состояние — приватное: pywebview обходит публичные атрибуты.
-    """
-
     def __init__(self):
         self._window = None
         self._hwnd = None
         self._old_proc = None
-        self._wndproc_ref = None        # держим ссылку, иначе GC убьёт callback
+        self._wndproc_ref = None
         self._installed = False
         self._lock = threading.Lock()
 
         self._maximized = False
         self._active = True
-        self._last_click = (0.0, (0, 0))   # для двойного клика по титлбару
+        self._last_click = (0.0, (0, 0))
 
-        self._close_cb = None              # что делать по кнопке «Закрыть»
-        self._on_installed = None          # вызывается, когда хук установлен
+        self._close_cb = None
+        self._on_installed = None
 
-    # ---------- инициализация ----------
+        self._integration = None
+        self.eval = self._eval_js_safe
+
     def bind(self, window):
         self._window = window
         window.events.loaded += self._on_loaded
+
+    def _eval_js_safe(self, js: str):
+        def run():
+            try:
+                if self._window:
+                    self._window.evaluate_js(js)
+            except Exception:
+                pass
+        threading.Thread(target=run, daemon=True).start()
 
     def _on_loaded(self):
         with self._lock:
@@ -314,8 +288,6 @@ class WindowApi:
                 try:
                     from System import Action
                     if form.InvokeRequired:
-                        # подмену WndProc делаем строго в UI-потоке,
-                        # чтобы не было гонки с уже идущими сообщениями
                         form.Invoke(Action(self._install_ui))
                     else:
                         self._install_ui()
@@ -327,18 +299,15 @@ class WindowApi:
     def _install_ui(self):
         hwnd = int(self._window.native.Handle.ToInt64())
 
-        # 1) стили: возвращаем системные «возможности» окна
         style = _get_long(hwnd, GWL_STYLE)
         _set_long(hwnd, GWL_STYLE,
                   style | WS_THICKFRAME | WS_MAXIMIZEBOX | WS_MINIMIZEBOX | WS_SYSMENU)
 
-        # 2) подмена WndProc
         self._hwnd = hwnd
         self._wndproc_ref = WNDPROC(self._wndproc)
         new_proc = ctypes.cast(self._wndproc_ref, ctypes.c_void_p).value
         self._old_proc = _set_long(hwnd, GWLP_WNDPROC, new_proc)
 
-        # 3) тень + скругления Win11
         try:
             m = MARGINS(1, 1, 1, 1)
             dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(m))
@@ -349,13 +318,19 @@ class WindowApi:
         except Exception as e:
             _log(f"DWM: {e}")
 
-        # 4) пересчитать non-client область (дёрнет наш WM_NCCALCSIZE)
         user32.SetWindowPos(
             hwnd, 0, 0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED)
 
         self._maximized = bool(user32.IsZoomed(hwnd))
         self._installed = True
+
+        try:
+            self._integration = WindowsIntegration(self)
+            self._integration.setup(hwnd)
+        except Exception as e:
+            _log(f"WindowsIntegration: {e}")
+
         _log(f"HWND={hwnd}, хук установлен")
 
         if self._on_installed:
@@ -364,7 +339,6 @@ class WindowApi:
             except Exception as e:
                 _log(f"on_installed: {e}")
 
-    # ---------- WndProc (выполняется в UI-потоке) ----------
     def _wndproc(self, hwnd, msg, wparam, lparam):
         old = self._old_proc
         if not old:
@@ -376,12 +350,20 @@ class WindowApi:
                 return 0
 
             if msg == WM_NCACTIVATE:
-                # lParam=-1: не перерисовывать рамку при смене активности
                 return user32.CallWindowProcW(old, hwnd, msg, wparam, -1)
 
             if msg == WM_APP_NCACTION:
                 self._on_nc_action(hwnd, int(wparam))
                 return 0
+
+            if msg == WM_HOTKEY:
+                if self._integration:
+                    self._integration.handle_hotkey(int(wparam))
+                return 0
+
+            if msg == WM_COMMAND:
+                if self._integration:
+                    self._integration.handle_command(int(wparam), int(lparam))
 
             if msg == WM_SIZE:
                 res = user32.CallWindowProcW(old, hwnd, msg, wparam, lparam)
@@ -404,7 +386,6 @@ class WindowApi:
         return user32.CallWindowProcW(old, hwnd, msg, wparam, lparam)
 
     def _on_nccalcsize(self, hwnd, wparam, lparam):
-        """Клиентская область = всё окно; развёрнутое — рабочая область монитора."""
         if not lparam:
             return
         if wparam:
@@ -418,7 +399,6 @@ class WindowApi:
                 rect.left, rect.top, rect.right, rect.bottom = area
 
     def _on_nc_action(self, hwnd, hit):
-        """Старт нативного drag (HTCAPTION) или resize (HTLEFT...)."""
         pt = wintypes.POINT()
         if not user32.GetCursorPos(ctypes.byref(pt)):
             return
@@ -434,7 +414,6 @@ class WindowApi:
         else:
             return
 
-        # Если кнопку уже отпустили — модальный цикл «залипнет» на курсоре
         vk = VK_RBUTTON if user32.GetSystemMetrics(SM_SWAPBUTTON) else VK_LBUTTON
         if not (user32.GetAsyncKeyState(vk) & 0x8000):
             return
@@ -459,9 +438,7 @@ class WindowApi:
         if self._hwnd:
             user32.PostMessageW(self._hwnd, WM_SYSCOMMAND, cmd, 0)
 
-    # ---------- Python -> JS ----------
     def _push_state(self):
-        """Состояние читаем в момент отправки — «последний выигрывает»."""
         def run():
             try:
                 hwnd = self._hwnd
@@ -475,9 +452,7 @@ class WindowApi:
                 pass
         threading.Thread(target=run, daemon=True).start()
 
-    # ============================================================
-    # ПУБЛИЧНОЕ API (вызывается из JS, в рабочем потоке pywebview)
-    # ============================================================
+    # ---------- публичное API ----------
     def minimize(self):
         self._post_syscommand(SC_MINIMIZE)
 
@@ -496,12 +471,10 @@ class WindowApi:
             self._window.destroy()
 
     def start_drag(self):
-        """mousedown по титлбару. Двойной клик определяется здесь же."""
         if self._hwnd:
             user32.PostMessageW(self._hwnd, WM_APP_NCACTION, HTCAPTION, 0)
 
     def start_resize(self, edge: int):
-        """mousedown по resize-хэндлу. edge: 10..17 (HTLEFT..HTBOTTOMRIGHT)."""
         try:
             edge = int(edge)
         except (TypeError, ValueError):
@@ -510,10 +483,6 @@ class WindowApi:
             user32.PostMessageW(self._hwnd, WM_APP_NCACTION, edge, 0)
 
     def set_background(self, css_color: str) -> bool:
-        """
-        Цвет подложки окна/WebView2 = фон темы. Убирает белые/чёрные
-        вспышки в новых областях при растягивании окна.
-        """
         rgb = _parse_css_color(css_color)
         if not rgb or not self._window:
             return False
@@ -542,6 +511,58 @@ class WindowApi:
             _log(f"set_background: {e}")
             return False
 
+    # ---------- Windows-интеграция ----------
+    def set_playback_state(self, is_playing: bool) -> bool:
+        if self._integration:
+            self._integration.set_playback_state(bool(is_playing))
+            return True
+        return False
+
+    def update_taskbar_progress(self, position, duration, is_playing: bool) -> bool:
+        if self._integration:
+            self._integration.update_progress(position, duration, bool(is_playing))
+            return True
+        return False
+
+    def clear_taskbar_progress(self) -> bool:
+        if self._integration:
+            self._integration.clear_progress()
+            return True
+        return False
+
+    def update_recent_tracks(self, paths) -> bool:
+        if self._integration:
+            self._integration.update_recent_tracks(list(paths or []))
+            return True
+        return False
+
+    def update_recent_tracks_by_ids(self, ids) -> bool:
+        if not self._integration:
+            return False
+        try:
+            from app import find_track_path
+        except Exception:
+            return False
+        paths = []
+        for tid in (ids or []):
+            p = find_track_path(str(tid))
+            if p:
+                paths.append(p)
+        self._integration.update_recent_tracks(paths)
+        return True
+
+    def toggle_mini_mode(self) -> bool:
+        if self._integration:
+            self._integration.toggle_mini_mode()
+            return True
+        return False
+
+    def set_mini_mode(self, enabled: bool) -> bool:
+        if self._integration:
+            self._integration.set_mini_mode(bool(enabled))
+            return True
+        return False
+
 
 def _parse_css_color(value):
     if not isinstance(value, str):
@@ -561,7 +582,6 @@ def _parse_css_color(value):
 # ОТКРЫТИЕ ФАЙЛОВ ИЗВНЕ
 # ============================================================
 def resolve_file(path: str):
-    """Файл с диска -> описание трека (как в /api/tracks) или None."""
     try:
         path = os.path.abspath(path)
         if not os.path.isfile(path):
@@ -591,7 +611,7 @@ def resolve_file(path: str):
 
 
 # ============================================================
-# КОНТРОЛЛЕР ПРИЛОЖЕНИЯ (окно + трей + экземпляры)
+# КОНТРОЛЛЕР
 # ============================================================
 class AppController:
     def __init__(self):
@@ -605,10 +625,9 @@ class AppController:
 
         self.start_hidden = False
         self._last_play = 0.0
-        self._pending_open = None          # (paths, mode) из командной строки
+        self._pending_open = None
         self._pending_maximize = False
 
-    # ---------- JS ----------
     def eval(self, js: str):
         def run():
             try:
@@ -623,7 +642,6 @@ class AppController:
                   % json.dumps(element_id))
 
     def _call_js_when_ready(self, fn: str, *args):
-        """Ждём, пока страница определит window.<fn>, и вызываем."""
         def run():
             try:
                 for _ in range(40):
@@ -638,7 +656,6 @@ class AppController:
                 _log(f"{fn}: {e}")
         threading.Thread(target=run, daemon=True).start()
 
-    # ---------- окно ----------
     def show_window(self):
         if not self.window:
             return
@@ -670,7 +687,6 @@ class AppController:
             instance.save_settings(self.settings)
 
     def restore_geometry(self):
-        """Вызывается из UI-потока сразу после установки хука."""
         g = self.settings.get("window")
         hwnd = self.api._hwnd if self.api else None
         if not hwnd or not isinstance(g, dict):
@@ -688,18 +704,16 @@ class AppController:
             return
         wp.rcNormalPosition = wintypes.RECT(l, t, r, b)
         if self.start_hidden:
-            wp.showCmd = 0                                  # SW_HIDE
+            wp.showCmd = 0
             self._pending_maximize = bool(g.get("max"))
         else:
-            wp.showCmd = 3 if g.get("max") else 1           # SW_SHOWMAXIMIZED / SW_SHOWNORMAL
+            wp.showCmd = 3 if g.get("max") else 1
         user32.SetWindowPlacement(hwnd, ctypes.byref(wp))
 
-    # ---------- закрытие ----------
     def _hide_to_tray(self) -> bool:
         return self.tray_ok and bool(self.settings.get("close_to_tray", True))
 
     def request_close(self):
-        """Кнопка «Закрыть» в нашем титлбаре."""
         if self.quitting or not self._hide_to_tray():
             self.quit()
             return
@@ -707,7 +721,6 @@ class AppController:
         self.window.hide()
 
     def on_closing(self):
-        """Alt+F4 / закрытие из панели задач. False = отменить закрытие."""
         if self.quitting:
             return True
         self.save_geometry()
@@ -720,22 +733,40 @@ class AppController:
         if self.quitting:
             return
         self.quitting = True
-        self.save_geometry()
+
+        # 1) Windows-интеграция
+        try:
+            if self.api and getattr(self.api, "_integration", None):
+                self.api._integration.cleanup()
+        except Exception:
+            pass
+
+        # 2) состояние окна
+        try:
+            self.save_geometry()
+        except Exception:
+            pass
         instance.clear_info()
-        if self.tray:
-            self.tray.stop()
+
+        # 3) трей: остановить ровно один раз и обнулить ссылку
+        tray = self.tray
+        self.tray = None
+        if tray:
+            try:
+                tray.stop()
+            except Exception:
+                pass
+
+        # 4) окно — в отдельном потоке, чтобы не блокировать текущий
         if self.window:
             threading.Thread(target=self.window.destroy, daemon=True).start()
 
-    # ---------- файлы ----------
     def open_paths(self, paths, mode: str = "play"):
         items = [t for t in (resolve_file(p) for p in paths) if t]
         if not items:
             self.show_window()
             return
 
-        # Проводник запускает по процессу на каждый выделенный файл:
-        # первый запускает воспроизведение, остальные (в течение 1.5 с) — в очередь.
         now = time.monotonic()
         if mode == "play":
             if self._last_play and now - self._last_play < 1.5:
@@ -758,7 +789,6 @@ controller = AppController()
 
 @app.route("/api/_instance/open", methods=["POST"])
 def _api_instance_open():
-    """Сюда стучится второй экземпляр. Защищено токеном из instance.json."""
     if not controller.token or request.headers.get("X-Token") != controller.token:
         abort(403)
     data = request.get_json(silent=True) or {}
@@ -781,6 +811,22 @@ def parse_args():
     return p.parse_args()
 
 
+def _install_signal_handlers() -> None:
+    """SIGINT (Ctrl+C) / SIGTERM — корректный выход через controller.quit()."""
+    def handler(signum, frame):
+        try:
+            controller.quit()
+        except Exception:
+            pass
+    for sig_name in ("SIGINT", "SIGTERM", "SIGBREAK"):
+        sig = getattr(signal, sig_name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, handler)
+            except Exception:
+                pass
+
+
 def main() -> None:
     args = parse_args()
 
@@ -794,25 +840,32 @@ def main() -> None:
     files = [os.path.abspath(f) for f in args.files]
     mode = "enqueue" if args.enqueue else "play"
 
-    # --- один экземпляр: передаём файлы работающему и выходим ---
     if not instance.acquire():
         ok = instance.send_to_running(files, mode)
         sys.exit(0 if ok else 1)
 
     atexit.register(instance.clear_info)
+    _install_signal_handlers()
+
     try:
         shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
     except Exception:
         pass
+
+    # Иконка: файл + AUMID IconResource — иначе кнопка на панели задач
+    # показывает иконку python.exe, а не нашу.
+    try:
+        ico = ensure_icon_file()
+        file_assoc.register_app_id(icon_path=ico)
+    except Exception as e:
+        _log(f"register_app_id: {e}")
 
     port = find_free_port(PORT_START, PORT_END)
     url = f"http://127.0.0.1:{port}"
 
     controller.token = secrets.token_hex(16)
 
-    flask_thread = threading.Thread(
-        target=run_flask, args=(port,), daemon=True
-    )
+    flask_thread = threading.Thread(target=run_flask, args=(port,), daemon=True)
     flask_thread.start()
 
     if not wait_for_server(port):
@@ -821,7 +874,6 @@ def main() -> None:
 
     instance.write_info(port, controller.token)
 
-    # --- трей (без pystray приложение работает, просто без трея) ---
     try:
         from tray import Tray
         controller.tray = Tray(controller)
@@ -859,10 +911,19 @@ def main() -> None:
 
     webview.start(debug=False)
 
+    # webview.start() вернулся — приложение закрывается.
     controller.quitting = True
     instance.clear_info()
-    if controller.tray:
-        controller.tray.stop()
+
+    # Трей мог быть уже остановлен в quit(); повторный stop() безопасен
+    # (idempotent), но ссылку всё равно обнуляем.
+    tray = controller.tray
+    controller.tray = None
+    if tray:
+        try:
+            tray.stop()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

@@ -16,6 +16,9 @@ ALLOWED_EXT = {".mp3", ".flac", ".m4a", ".ogg", ".opus", ".wav"}
 # id -> абсолютный путь. Заполняется из desktop.py, отдаётся теми же роутами.
 EXTERNAL_TRACKS = {}
 
+# Кэш id -> абсолютный путь (для jump list и других быстрых обращений).
+_PATH_CACHE = {}
+
 
 # ============================================================
 # ХЕЛПЕРЫ
@@ -138,6 +141,35 @@ def find_track_by_id(track_id: str):
     return None
 
 
+def find_track_path(track_id: str):
+    """
+    Кэшированный поиск абсолютного пути по id.
+    Используется для построения Jump List (см. desktop.py / windows_integration.py).
+    """
+    if track_id in _PATH_CACHE:
+        p = _PATH_CACHE[track_id]
+        return p if p and os.path.isfile(p) else None
+
+    ext_path = EXTERNAL_TRACKS.get(track_id)
+    if ext_path and os.path.isfile(ext_path):
+        _PATH_CACHE[track_id] = ext_path
+        return ext_path
+
+    for root, _, files in os.walk(MUSIC_DIR):
+        for name in files:
+            ext = os.path.splitext(name)[1].lower()
+            if ext not in ALLOWED_EXT:
+                continue
+            path = os.path.join(root, name)
+            rel_path = os.path.relpath(path, MUSIC_DIR)
+            if track_id_for(rel_path) == track_id:
+                _PATH_CACHE[track_id] = path
+                return path
+
+    _PATH_CACHE[track_id] = None
+    return None
+
+
 # ============================================================
 # ROUTES
 # ============================================================
@@ -187,6 +219,8 @@ def api_cover(track_id):
 if __name__ == "__main__":
     if not os.path.isdir(MUSIC_DIR):
         os.makedirs(MUSIC_DIR)
+    debug = os.environ.get("FLASK_DEBUG", "0") == "1"
     print(f" Музыка: {MUSIC_DIR}")
     print(f" Найдено треков: {len(scan_music())}")
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    print(f" Debug: {'ON' if debug else 'OFF'}")
+    app.run(host="0.0.0.0", port=5000, debug=debug)

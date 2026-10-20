@@ -43,6 +43,13 @@ const state = {
 };
 
 /* ============================================================
+   WINDOWS API (pywebview)
+   ============================================================ */
+function winApi(name) {
+    return (window.pywebview && window.pywebview.api && window.pywebview.api[name]) || null;
+}
+
+/* ============================================================
    ТЕМЫ
    ============================================================ */
 const THEMES = {
@@ -1188,6 +1195,10 @@ function playTrackFromList(track, list) {
         updatePlayIcon();
         highlightCurrent();
 
+        pushRecent(track);
+        const _api = winApi("set_playback_state");
+        if (_api) _api(true).catch(() => {});
+
         updateMediaSessionMetadata(track);
         if ("mediaSession" in navigator) {
             navigator.mediaSession.playbackState = "playing";
@@ -1277,6 +1288,9 @@ function togglePlay() {
     if (audio.paused) { audio.play(); state.isPlaying = true; }
     else { audio.pause(); state.isPlaying = false; }
     updatePlayIcon();
+
+    const _api = winApi("set_playback_state");
+    if (_api) _api(state.isPlaying).catch(() => {});
 }
 
 function updatePlayIcon() {
@@ -1425,6 +1439,8 @@ function updatePositionState() {
 /* ============================================================
    ПРОГРЕСС
    ============================================================ */
+let _lastTaskbarUpdate = 0;
+
 audio.addEventListener("timeupdate", () => {
     if (state.isSeeking) return;
     const pct = (audio.currentTime / audio.duration) * 100 || 0;
@@ -1433,6 +1449,16 @@ audio.addEventListener("timeupdate", () => {
     $("#time-current").textContent = formatTime(audio.currentTime);
 
     updatePositionState();
+
+    // Прогресс на значке панели задач — не чаще 1 раза в секунду
+    const now = performance.now();
+    if (now - _lastTaskbarUpdate > 1000) {
+        _lastTaskbarUpdate = now;
+        const _api = winApi("update_taskbar_progress");
+        if (_api && audio.duration > 0) {
+            _api(audio.currentTime, audio.duration, !audio.paused).catch(() => {});
+        }
+    }
 });
 
 audio.addEventListener("loadedmetadata", () => {
@@ -1440,7 +1466,21 @@ audio.addEventListener("loadedmetadata", () => {
     updatePositionState();
 });
 
-audio.addEventListener("ended", () => playNext(false));
+audio.addEventListener("ended", () => {
+    const _clr = winApi("clear_taskbar_progress");
+    if (_clr) _clr().catch(() => {});
+    playNext(false);
+});
+
+audio.addEventListener("play", () => {
+    const _api = winApi("set_playback_state");
+    if (_api) _api(true).catch(() => {});
+});
+
+audio.addEventListener("pause", () => {
+    const _api = winApi("set_playback_state");
+    if (_api) _api(false).catch(() => {});
+});
 
 const progressBar = $("#progress-bar");
 progressBar.addEventListener("mousedown", (e) => { state.isSeeking = true; seekTo(e); });
@@ -1549,6 +1589,17 @@ $("#player-fav").addEventListener("click", () => {
     if (!state.currentTrackId) return;
     toggleFavorite(state.currentTrackId);
 });
+
+/* ============================================================
+   КНОПКА МИНИ-РЕЖИМА
+   ============================================================ */
+const _miniBtn = $("#btn-mini");
+if (_miniBtn) {
+    _miniBtn.addEventListener("click", () => {
+        const _api = winApi("toggle_mini_mode");
+        if (_api) _api().catch(() => {});
+    });
+}
 
 /* ============================================================
    SHUFFLE / REPEAT
@@ -1831,10 +1882,6 @@ document.addEventListener("keydown", (e) => {
 
 /* ============================================================
    DESKTOP MODE — кастомный титлбар
-   ------------------------------------------------------------
-   Drag, resize, snap и двойной клик по титлбару выполняет сама
-   Windows (см. desktop.py). JS делает по одному вызову на mousedown
-   и больше ничего не отслеживает — никаких mousemove -> Python.
    ============================================================ */
 let nativeBgLast = "";
 
@@ -1859,7 +1906,6 @@ function initDesktopMode() {
     const btnMax   = document.getElementById("tb-maximize");
     const glyphMax = document.getElementById("tb-glyph-maximize");
 
-    // ---------- состояние окна (приходит из Python) ----------
     function setMaximized(isMax) {
         document.body.classList.toggle("maximized", isMax);
         if (glyphMax) glyphMax.textContent = isMax ? "\uE923" : "\uE922";
@@ -1877,7 +1923,6 @@ function initDesktopMode() {
 
     api.is_maximized().then(setMaximized).catch(() => {});
 
-    // ---------- кнопки ----------
     const bindBtn = (id, fn) => {
         const el = document.getElementById(id);
         if (el) el.addEventListener("click", fn);
@@ -1886,18 +1931,16 @@ function initDesktopMode() {
     bindBtn("tb-maximize", () => api.toggle_maximize());
     bindBtn("tb-close",    () => api.close());
 
-    // ---------- перетаскивание за титлбар ----------
     if (titlebar) {
         titlebar.addEventListener("mousedown", (e) => {
             if (e.button !== 0) return;
-            e.preventDefault();                       // без выделения/фокуса
+            e.preventDefault();
             if (e.target.closest(".titlebar-controls")) return;
             api.start_drag();
         });
         titlebar.addEventListener("contextmenu", (e) => e.preventDefault());
     }
 
-    // ---------- resize: невидимые хэндлы по краям окна ----------
     const EDGES = {
         left: 10, right: 11, top: 12, topleft: 13,
         topright: 14, bottom: 15, bottomleft: 16, bottomright: 17,
@@ -1930,13 +1973,73 @@ window.__openExternal = function (items, mode) {
     if (!Array.isArray(items) || !items.length) return;
 
     if (mode === "enqueue" && state.currentTrackId && state.currentQueue.length) {
-        // новый массив, чтобы не менять списки библиотеки
         state.currentQueue = [...state.currentQueue, ...items];
         buildShuffleOrder();
         return;
     }
     playTrackFromList(items[0], items);
 };
+
+/* ============================================================
+   WINDOWS-ИНТЕГРАЦИЯ
+   — вызывается из windows_integration.py через evaluate_js
+   — pushRecent формирует Jump List
+   ============================================================ */
+const RECENT_KEY = "alpha-music-recent";
+const RECENT_MAX = 10;
+
+function getRecent() {
+    try {
+        return JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
+    } catch {
+        return [];
+    }
+}
+
+function pushRecent(track) {
+    if (!track || !track.id) return;
+    let recent = getRecent().filter(id => id !== track.id);
+    recent.unshift(track.id);
+    recent = recent.slice(0, RECENT_MAX);
+    localStorage.setItem(RECENT_KEY, JSON.stringify(recent));
+
+    const _api = winApi("update_recent_tracks_by_ids");
+    if (_api) _api(recent).catch(() => {});
+}
+
+window.__mediaAction = function (action) {
+    if (action === "playpause") {
+        togglePlay();
+    } else if (action === "next") {
+        playNext(true);
+    } else if (action === "prev") {
+        playPrev();
+    } else if (action === "stop") {
+        audio.pause();
+        audio.currentTime = 0;
+        state.isPlaying = false;
+        updatePlayIcon();
+        const _api = winApi("set_playback_state");
+        if (_api) _api(false).catch(() => {});
+        const _clr = winApi("clear_taskbar_progress");
+        if (_clr) _clr().catch(() => {});
+    }
+};
+
+window.__onMiniMode = function (enabled) {
+    document.body.classList.toggle("mini-mode", !!enabled);
+};
+
+// При старте — синхронизируем Jump List с уже сохранёнными id
+function _syncJumpListOnStart() {
+    const _api = winApi("update_recent_tracks_by_ids");
+    if (_api) _api(getRecent()).catch(() => {});
+}
+
+if (window.pywebview && window.pywebview.api) {
+    _syncJumpListOnStart();
+}
+window.addEventListener("pywebviewready", _syncJumpListOnStart);
 
 /* ============================================================
    INIT

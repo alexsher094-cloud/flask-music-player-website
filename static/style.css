@@ -2161,3 +2161,86 @@ body.desktop-mode.window-inactive .titlebar-logo {
 body.maximized .rz {
     display: none;
 }
+
+/* ============================================================
+   MINI-MODE (компактное окно поверх остальных)
+   Управляется из app.js через body.mini-mode + windows_integration.py
+   ============================================================ */
+body.mini-mode {
+    overflow: hidden;
+}
+
+body.mini-mode .sidebar,
+body.mini-mode .main,
+body.mini-mode .bottom-nav,
+body.mini-mode .titlebar,
+body.mini-mode .titlebar-controls,
+body.mini-mode .player-right .volume-bar,
+body.mini-mode #btn-mini {
+    display: none !important;
+}
+
+body.mini-mode .app {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
+    grid-template-areas: "player";
+    padding: 0;
+    gap: 0;
+    height: 100vh;
+    height: 100dvh;
+}
+
+body.mini-mode .player {
+    grid-area: player;
+    height: 100%;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    grid-template-rows: 1fr auto;
+    grid-template-areas:
+        "left    center  right"
+        "progress progress progress";
+    gap: 4px 12px;
+    padding: 8px 12px;
+    border-radius: 0;
+    border: none;
+}
+
+body.mini-mode .player-left    { grid-area: left;     min-width: 0; }
+body.mini-mode .player-center  { grid-area: center;   min-width: 0; }
+body.mini-mode .player-right   { grid-area: right;    min-width: 0; gap: 4px; }
+body.mini-mode .player-progress{ grid-area: progress; width: 100%; }
+
+body.mini-mode .player-cover {
+    width: 48px;
+    height: 48px;
+    border-radius: 6px;
+}
+
+body.mini-mode .player-title  { font-size: 13px; }
+body.mini-mode .player-artist { font-size: 11px; }
+
+body.mini-mode .player-center {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    align-items: center;
+    justify-content: center;
+}
+
+body.mini-mode .player-controls {
+    gap: 8px;
+}
+
+body.mini-mode .ctrl-btn.play-btn {
+    width: 36px;
+    height: 36px;
+}
+
+body.mini-mode .ctrl-btn.play-btn svg { width: 18px; height: 18px; }
+
+body.mini-mode .player-progress {
+    max-width: none;
+    gap: 8px;
+}
+
+body.mini-mode .time { font-size: 10.5px; min-width: 30px; }

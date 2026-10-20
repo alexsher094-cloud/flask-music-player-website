@@ -3,14 +3,13 @@ file_assoc.py — регистрация в Windows (без прав админ�
   • «Открыть с помощью» / «Приложения по умолчанию» для аудиофайлов
   • пункты контекстного меню Проводника: «Воспроизвести» / «Добавить в очередь»
   • автозапуск вместе с Windows
+  • AppUserModelID + IconResource (для корректной иконки на панели задач
+    и группировки окон)
 
-CLI (для установщика):
+CLI:
     python file_assoc.py --register | --unregister
     python file_assoc.py --autostart on | off
-
-Windows 10/11 не даёт программам самим назначить себя «по умолчанию» —
-после register() пользователь выбирает Music в «Открыть с помощью»
-или в Параметры → Приложения по умолчанию.
+    python file_assoc.py --register-app-id
 """
 
 import ctypes
@@ -20,6 +19,7 @@ import winreg
 
 APP_NAME = "Music"
 PROGID = "MusicPlayer.Audio"
+APP_USER_MODEL_ID = "Music.Player"
 CAPS_KEY = r"Software\MusicPlayer\Capabilities"
 EXTS = (".mp3", ".flac", ".m4a", ".ogg", ".opus", ".wav")
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -27,11 +27,10 @@ HKCU = winreg.HKEY_CURRENT_USER
 
 
 def launch_prefix() -> str:
-    """Команда запуска приложения (без аргументов)."""
-    if getattr(sys, "frozen", False):                  # PyInstaller / Nuitka
+    if getattr(sys, "frozen", False):
         return f'"{sys.executable}"'
     exe = sys.executable
-    if exe.lower().endswith("python.exe"):             # без консольного окна
+    if exe.lower().endswith("python.exe"):
         pyw = exe[:-len("python.exe")] + "pythonw.exe"
         if os.path.isfile(pyw):
             exe = pyw
@@ -60,14 +59,39 @@ def _delete_tree(path: str) -> None:
 
 def _notify_shell() -> None:
     try:
-        # SHCNE_ASSOCCHANGED, SHCNF_IDLIST
         ctypes.windll.shell32.SHChangeNotify(0x08000000, 0, None, None)
     except Exception:
         pass
 
 
+# ---------- AppUserModelID ----------
+def register_app_id(app_id: str = APP_USER_MODEL_ID, icon_path: str = "") -> None:
+    """
+    Регистрирует AppUserModelID в HKCU.
+
+    icon_path (если задан) пишется в IconResource — Windows берёт иконку
+    кнопки на панели задач из этого файла, а не из python.exe.
+    Формат значения: "<path>,<index>".
+    """
+    key_path = rf"Software\Classes\AppUserModelId\{app_id}"
+    try:
+        with winreg.CreateKeyEx(HKCU, key_path, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, "Music Player")
+            if icon_path and os.path.isfile(icon_path):
+                winreg.SetValueEx(key, "IconResource", 0, winreg.REG_SZ,
+                                  f"{icon_path},0")
+    except OSError as e:
+        print(f"[AppID] register failed: {e}", file=sys.stderr)
+
+
+def unregister_app_id(app_id: str = APP_USER_MODEL_ID) -> None:
+    _delete_tree(rf"Software\Classes\AppUserModelId\{app_id}")
+
+
 # ---------- ассоциации и контекстное меню ----------
 def register() -> None:
+    register_app_id()
+
     prefix = launch_prefix()
     base = rf"Software\Classes\{PROGID}"
 
@@ -75,20 +99,17 @@ def register() -> None:
     _set(base + r"\shell\open", "FriendlyAppName", APP_NAME)
     _set(base + r"\shell\open\command", None, f'{prefix} "%1"')
 
-    # ProgID виден в «Открыть с помощью» для каждого расширения
     for ext in EXTS:
         with winreg.CreateKeyEx(HKCU, rf"Software\Classes\{ext}\OpenWithProgids",
                                 0, winreg.KEY_SET_VALUE) as key:
             winreg.SetValueEx(key, PROGID, 0, winreg.REG_NONE, b"")
 
-        # контекстное меню Проводника
         shell = rf"Software\Classes\SystemFileAssociations\{ext}\shell"
         _set(shell + r"\MusicPlayer.Play", "MUIVerb", "Воспроизвести в Music")
         _set(shell + r"\MusicPlayer.Play\command", None, f'{prefix} "%1"')
         _set(shell + r"\MusicPlayer.Enqueue", "MUIVerb", "Добавить в очередь Music")
         _set(shell + r"\MusicPlayer.Enqueue\command", None, f'{prefix} --enqueue "%1"')
 
-    # раздел «Приложения по умолчанию»
     _set(CAPS_KEY, "ApplicationName", APP_NAME)
     _set(CAPS_KEY, "ApplicationDescription", "Музыкальный плеер")
     for ext in EXTS:
@@ -110,6 +131,7 @@ def unregister() -> None:
         _delete_tree(rf"Software\Classes\SystemFileAssociations\{ext}\shell\MusicPlayer.Play")
         _delete_tree(rf"Software\Classes\SystemFileAssociations\{ext}\shell\MusicPlayer.Enqueue")
     _delete_tree(r"Software\MusicPlayer")
+    unregister_app_id()
     try:
         with winreg.OpenKey(HKCU, r"Software\RegisteredApplications",
                             0, winreg.KEY_SET_VALUE) as key:
@@ -151,5 +173,8 @@ if __name__ == "__main__":
     elif args[:1] == ["--autostart"] and len(args) == 2 and args[1] in ("on", "off"):
         set_autostart(args[1] == "on")
         print("Автозапуск:", args[1])
+    elif args[:1] == ["--register-app-id"]:
+        register_app_id()
+        print("AppUserModelID зарегистрирован.")
     else:
         print(__doc__)
