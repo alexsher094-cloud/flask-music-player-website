@@ -28,7 +28,7 @@ from flask import abort, jsonify, request
 import file_assoc
 import instance
 from app import (ALLOWED_EXT, EXTERNAL_TRACKS, app, extract_cover,
-                 extract_metadata, track_id_for, lib)
+                 extract_metadata, extract_replaygain, track_id_for, lib)
 from presence import DiscordPresence
 from windows_integration import WindowsIntegration, ensure_icon_file
 
@@ -337,12 +337,41 @@ class WindowApi:
             _log(f"WindowsIntegration: {e}")
 
         _log(f"HWND={hwnd}, хук установлен")
+        self._allow_media_permission()
 
         if self._on_installed:
             try:
                 self._on_installed()
             except Exception as e:
                 _log(f"on_installed: {e}")
+
+    def _allow_media_permission(self):
+        """
+        Разрешает странице на 127.0.0.1 доступ к «микрофону». Он нужен только для того,
+        чтобы Chromium показал НАЗВАНИЯ устройств вывода в настройках (кнопка
+        «Показать названия»): поток сразу останавливается, звук не записывается.
+        Без этого WebView2 показывал бы системный запрос разрешения.
+        """
+        try:
+            wv = getattr(getattr(self._window.native, "browser", None), "web_view", None)
+            core = getattr(wv, "CoreWebView2", None)
+            if core is None:
+                return
+            from Microsoft.Web.WebView2.Core import (CoreWebView2PermissionKind,
+                                                     CoreWebView2PermissionState)
+
+            def on_permission(sender, args):
+                try:
+                    if (args.PermissionKind == CoreWebView2PermissionKind.Microphone
+                            and str(args.Uri).startswith("http://127.0.0.1")):
+                        args.State = CoreWebView2PermissionState.Allow
+                except Exception as e:
+                    _log(f"permission: {e}")
+
+            core.PermissionRequested += on_permission
+            self._permission_handler = on_permission   # держим ссылку, чтобы не собрал GC
+        except Exception as e:
+            _log(f"PermissionRequested: {e}")
 
     def _wndproc(self, hwnd, msg, wparam, lparam):
         old = self._old_proc
@@ -628,6 +657,7 @@ def resolve_file(path: str):
             "date": meta["date"],
             "mtime": meta["mtime"],
             "hasCover": cover is not None,
+            "rg": extract_replaygain(path),
         }
     except Exception as e:
         _log(f"resolve_file({path!r}): {e}")

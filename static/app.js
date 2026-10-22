@@ -28,6 +28,7 @@ const state = {
     shuffle: false,
     repeat: "off",
     shuffleOrder: [],
+    pendingShuffle: null,
     view: "all",
     search: "",
     favorites: new Set(JSON.parse(localStorage.getItem(FAV_KEY) || "[]")),
@@ -218,7 +219,9 @@ try {
     }
 } catch {}
 
-const audio = document.getElementById("audio");
+// AudioEngine (static/audio-engine.js): два <audio> для gapless, ReplayGain, выбор устройства.
+// Повторяет нужную часть интерфейса HTMLAudioElement, поэтому остальной код не меняется.
+const audio = new AudioEngine(document.getElementById("audio"));
 audio.volume = state.volume;
 
 /* ============================================================
@@ -460,17 +463,15 @@ const EQ_PRESETS = {
 };
 
 let audioCtx = null;
-let audioSource = null;
 let eqFilters = [];
 
+// AudioContext и слоты (A/B → ReplayGain-gain → audio.bus) создаёт AudioEngine;
+// здесь к его шине подключается эквалайзер, а за ним — выход.
 function ensureAudioContext() {
-    if (audioCtx) {
-        if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
-        return;
-    }
+    const ctx = audio.ensureContext();
+    if (!ctx || audioCtx) return;
+    audioCtx = ctx;
     try {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        audioSource = audioCtx.createMediaElementSource(audio);
         eqFilters = EQ_BANDS.map((band, i) => {
             const filter = audioCtx.createBiquadFilter();
             filter.type = band.type;
@@ -479,12 +480,13 @@ function ensureAudioContext() {
             filter.gain.value = state.eq.enabled ? (state.eq.gains[i] || 0) : 0;
             return filter;
         });
-        let node = audioSource;
+        let node = audio.bus;
         eqFilters.forEach(f => { node.connect(f); node = f; });
         node.connect(audioCtx.destination);
-        if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
     } catch (e) {
-        console.error("AudioContext init failed:", e);
+        console.error("EQ init failed:", e);
+        eqFilters = [];
+        try { audio.bus.disconnect(); audio.bus.connect(audioCtx.destination); } catch {}
     }
 }
 
@@ -1215,13 +1217,18 @@ function updateArtistAlbumsNav() {
 /* ============================================================
    ПЛЕЕР
    ============================================================ */
-function buildShuffleOrder() {
-    const n = state.currentQueue.length;
-    state.shuffleOrder = [...Array(n).keys()];
+function makeShuffleOrder(n) {
+    const order = [...Array(n).keys()];
     for (let i = n - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
-        [state.shuffleOrder[i], state.shuffleOrder[j]] = [state.shuffleOrder[j], state.shuffleOrder[i]];
+        [order[i], order[j]] = [order[j], order[i]];
     }
+    return order;
+}
+
+function buildShuffleOrder() {
+    state.shuffleOrder = makeShuffleOrder(state.currentQueue.length);
+    state.pendingShuffle = null;   // заранее выбранный следующий круг больше не актуален
 }
 
 function playTrackFromList(track, list) {
@@ -1235,32 +1242,73 @@ function playTrackFromList(track, list) {
     state.currentTrackId = track.id;
     state.currentTrack = track;
     state.switchingTrack = true;
-    audio.src = `/api/stream/${track.id}`;
     audio.volume = state.volume;
-    audio.play().then(() => {
+    audio.playTrack(track).then(() => {
         if (state.currentTrackId !== track.id) return;   // уже переключили трек
         state.isPlaying = true;
         state.switchingTrack = false;
-        updatePlayerUI(track);
-        updatePlayIcon();
-        highlightCurrent();
-
-        pushRecent(track);
-        const _api = winApi("set_playback_state");
-        if (_api) _api(true).catch(() => {});
-
-        updateMediaSessionMetadata(track);
-        if ("mediaSession" in navigator) {
-            navigator.mediaSession.playbackState = "playing";
-        }
-        updatePositionState();
-        syncPresence();
+        onTrackStarted(track);
     }).catch((e) => {
         if (state.currentTrackId !== track.id) return;   // это отменённый старый трек
         state.switchingTrack = false;
         console.error("Play error:", e);
         clearPresence();
     });
+}
+
+// Всё, что нужно обновить, когда трек реально начал играть
+// (после обычного старта и после gapless-перехода).
+function onTrackStarted(track) {
+    updatePlayerUI(track);
+    updatePlayIcon();
+    highlightCurrent();
+
+    pushRecent(track);
+    const _api = winApi("set_playback_state");
+    if (_api) _api(true).catch(() => {});
+
+    updateMediaSessionMetadata(track);
+    if ("mediaSession" in navigator) {
+        navigator.mediaSession.playbackState = "playing";
+    }
+    updatePositionState();
+    syncPresence();
+}
+
+// Что играть следом — без побочных эффектов. Нужно и playNext(), и gapless-движку.
+// null — очередь закончилась; pending — начало нового круга перемешанной очереди.
+function peekNext(manual) {
+    const q = state.currentQueue;
+    if (!q.length) return null;
+
+    const currentIdx = q.findIndex(t => t.id === state.currentTrackId);
+    if (currentIdx === -1) return null;
+
+    if (state.repeat === "one" && !manual) return { track: q[currentIdx] };
+
+    if (state.shuffle) {
+        const nextPos = state.shuffleOrder.indexOf(currentIdx) + 1;
+        if (nextPos >= state.shuffleOrder.length) {
+            if (state.repeat === "off") return null;
+            if (!state.pendingShuffle || state.pendingShuffle.length !== q.length) {
+                state.pendingShuffle = makeShuffleOrder(q.length);
+            }
+            return { track: q[state.pendingShuffle[0]], pending: true };
+        }
+        return { track: q[state.shuffleOrder[nextPos]] };
+    }
+
+    if (currentIdx === q.length - 1) {
+        return state.repeat === "off" ? null : { track: q[0] };
+    }
+    return { track: q[currentIdx + 1] };
+}
+
+function commitPendingShuffle() {
+    if (state.pendingShuffle && state.pendingShuffle.length === state.currentQueue.length) {
+        state.shuffleOrder = state.pendingShuffle;
+    }
+    state.pendingShuffle = null;
 }
 
 function playNext(manual = false) {
@@ -1278,41 +1326,16 @@ function playNext(manual = false) {
         return;
     }
 
-    let nextIdx;
-
-    if (state.shuffle) {
-        const posInShuffle = state.shuffleOrder.indexOf(currentIdx);
-        const nextPos = posInShuffle + 1;
-
-        if (nextPos >= state.shuffleOrder.length) {
-            if (state.repeat === "off") {
-                audio.pause();
-                state.isPlaying = false;
-                updatePlayIcon();
-                clearPresence();
-                return;
-            }
-            buildShuffleOrder();
-            nextIdx = state.shuffleOrder[0];
-        } else {
-            nextIdx = state.shuffleOrder[nextPos];
-        }
-    } else {
-        if (currentIdx === state.currentQueue.length - 1) {
-            if (state.repeat === "off") {
-                audio.pause();
-                state.isPlaying = false;
-                updatePlayIcon();
-                clearPresence();
-                return;
-            }
-            nextIdx = 0;
-        } else {
-            nextIdx = currentIdx + 1;
-        }
+    const next = peekNext(true);
+    if (!next) {
+        audio.pause();
+        state.isPlaying = false;
+        updatePlayIcon();
+        clearPresence();
+        return;
     }
-
-    playTrackFromList(state.currentQueue[nextIdx], state.currentQueue);
+    if (next.pending) commitPendingShuffle();
+    playTrackFromList(next.track, state.currentQueue);
 }
 
 function playPrev() {
@@ -2203,4 +2226,29 @@ updateRepeatUI();
 initEQ();
 initDiscordSettings();
 setupMediaSessionHandlers();
+
+// Gapless: движок спрашивает, что играть дальше, и сообщает, когда переключился сам
+audio.nextProvider = () => {
+    const next = peekNext(false);
+    return next ? next.track : null;
+};
+
+audio.onAdvance = (track) => {
+    const next = peekNext(false);
+    if (next && next.pending && next.track.id === track.id) commitPendingShuffle();
+
+    state.currentTrackId = track.id;
+    state.currentTrack = track;
+    state.switchingTrack = false;
+    state.isPlaying = true;
+
+    const _clr = winApi("clear_taskbar_progress");
+    if (_clr) _clr().catch(() => {});
+    onTrackStarted(track);
+};
+
+// Секция «Звук» в настройках
+initAudioSettings(audio, {
+    onDeviceLost: () => { if (state.isPlaying) togglePlay(); },
+});
 loadTracks();

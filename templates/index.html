@@ -9,6 +9,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/style.css">
     <link rel="stylesheet" href="/static/mobile.css">
+    <link rel="stylesheet" href="/static/audio.css">
 </head>
 <body>
 
@@ -277,6 +278,120 @@
                         </svg>
                         Сбросить настройки
                     </button>
+                </div>
+
+                <!-- ЗВУК -->
+                <div class="theme-section audio-section">
+                    <div class="theme-header">
+                        <div class="theme-header-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M11 5L6 9H2v6h4l5 4V5z"/>
+                                <path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/>
+                            </svg>
+                        </div>
+                        <div class="theme-header-text">
+                            <h2>Звук</h2>
+                            <p>Переходы без пауз, выравнивание громкости, устройство вывода</p>
+                        </div>
+                    </div>
+
+                    <div class="theme-custom">
+                        <div class="theme-row">
+                            <div class="theme-row-label">
+                                <span>Переходы без пауз</span>
+                                <span class="theme-row-hint">Следующий трек стартует точно в момент окончания текущего (gapless)</span>
+                            </div>
+                            <label class="eq-toggle">
+                                <input type="checkbox" id="audio-gapless" checked>
+                                <span class="eq-toggle-track"></span>
+                            </label>
+                        </div>
+
+                        <div class="theme-row">
+                            <div class="theme-row-label">
+                                <span>Выравнивание громкости</span>
+                                <span class="theme-row-hint">ReplayGain: используются теги в файлах</span>
+                            </div>
+                            <select class="audio-select" id="audio-rg-mode">
+                                <option value="off">Выключено</option>
+                                <option value="track">По треку</option>
+                                <option value="album">По альбому</option>
+                            </select>
+                        </div>
+
+                        <div class="theme-row">
+                            <div class="theme-row-label">
+                                <span>Предусиление</span>
+                                <span class="theme-row-hint">Добавка к громкости для файлов с ReplayGain</span>
+                            </div>
+                            <div class="theme-slider-wrap">
+                                <input type="range" id="audio-rg-preamp" min="-12" max="12" step="0.5" value="0">
+                                <span class="theme-slider-value" id="audio-rg-preamp-value">0.0 дБ</span>
+                            </div>
+                        </div>
+
+                        <div class="theme-row">
+                            <div class="theme-row-label">
+                                <span>Файлы без тегов</span>
+                                <span class="theme-row-hint">Громкость для треков, где нет ReplayGain</span>
+                            </div>
+                            <div class="theme-slider-wrap">
+                                <input type="range" id="audio-rg-fallback" min="-12" max="6" step="0.5" value="0">
+                                <span class="theme-slider-value" id="audio-rg-fallback-value">0.0 дБ</span>
+                            </div>
+                        </div>
+
+                        <div class="theme-row">
+                            <div class="theme-row-label">
+                                <span>Защита от клиппинга</span>
+                                <span class="theme-row-hint">Не усиливать трек выше, чем позволяет его пик</span>
+                            </div>
+                            <label class="eq-toggle">
+                                <input type="checkbox" id="audio-rg-clip" checked>
+                                <span class="eq-toggle-track"></span>
+                            </label>
+                        </div>
+
+                        <div class="theme-row">
+                            <div class="theme-row-label">
+                                <span>Устройство вывода</span>
+                                <span class="theme-row-hint" id="audio-device-hint"></span>
+                                <button class="audio-link-btn hidden" id="audio-device-unlock" type="button">Показать названия</button>
+                            </div>
+                            <div class="audio-device-wrap">
+                                <select class="audio-select" id="audio-device"></select>
+                                <button class="audio-icon-btn" id="audio-device-refresh" type="button" title="Обновить список">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
+                                        <path d="M21 3v5h-5"/>
+                                        <path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
+                                        <path d="M3 21v-5h5"/>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="theme-row">
+                            <div class="theme-row-label">
+                                <span>Пауза при отключении устройства</span>
+                                <span class="theme-row-hint">Например, если вынули наушники</span>
+                            </div>
+                            <label class="eq-toggle">
+                                <input type="checkbox" id="audio-unplug" checked>
+                                <span class="eq-toggle-track"></span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="theme-footer">
+                        <button class="btn-reset-eq" id="audio-reset">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M3 12a9 9 0 1 0 3-6.7L3 8"/>
+                                <path d="M3 3v5h5"/>
+                            </svg>
+                            Сбросить звук
+                        </button>
+                    </div>
                 </div>
 
                 <!-- ТЕМА -->
@@ -553,6 +668,7 @@
     </footer>
 </div>
 
+<script src="/static/audio-engine.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

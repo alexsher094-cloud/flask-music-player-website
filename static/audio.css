@@ -1,0 +1,73 @@
+/* ============================================================
+   audio.css — секция «Звук» в настройках (gapless / ReplayGain / устройство).
+   Остальное оформление берётся из theme-* классов style.css.
+   ============================================================ */
+.audio-section .theme-row-label { cursor: default; }
+
+.audio-select {
+    -webkit-appearance: none;
+    appearance: none;
+    min-width: 220px;
+    max-width: 320px;
+    padding: 8px 34px 8px 12px;
+    background-color: var(--bg-active);
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a8a8b3' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'><path d='M6 9l6 6 6-6'/></svg>");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    background-size: 14px;
+    color: var(--text);
+    border: 1px solid var(--border-2);
+    border-radius: var(--radius);
+    font: 500 13px var(--font);
+    cursor: pointer;
+    outline: none;
+    transition: border-color 0.15s;
+}
+
+.audio-select:hover { border-color: var(--accent); }
+.audio-select:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-glow); }
+.audio-select option { background: var(--bg-surface); color: var(--text); }
+
+.audio-section select:disabled,
+.audio-section input:disabled,
+.audio-section button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.audio-device-wrap { display: flex; align-items: center; gap: 8px; }
+
+.audio-icon-btn {
+    width: 34px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    background: var(--bg-active);
+    color: var(--text-2);
+    border: 1px solid var(--border-2);
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+}
+
+.audio-icon-btn:hover { color: var(--text); border-color: var(--accent); }
+.audio-icon-btn svg { width: 16px; height: 16px; }
+
+.audio-link-btn {
+    align-self: flex-start;
+    padding: 0;
+    background: none;
+    border: none;
+    color: var(--accent);
+    font: 500 12px var(--font);
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+.audio-link-btn:hover { color: var(--accent-hover); }
+
+@media (max-width: 720px) {
+    .audio-section .theme-row { flex-direction: column; align-items: stretch; }
+    .audio-section .theme-row > .eq-toggle { align-self: flex-start; }
+    .audio-section .theme-slider-wrap { min-width: 0; }
+    .audio-select { min-width: 0; max-width: none; width: 100%; }
+    .audio-device-wrap .audio-select { flex: 1; }
+}

@@ -24,7 +24,7 @@ from typing import Callable, Optional
 
 log = logging.getLogger("library")
 
-SCHEMA_VERSION = 1            # увеличить, если поменялась логика разбора тегов
+SCHEMA_VERSION = 2            # увеличить, если поменялась логика разбора тегов (v2: ReplayGain)
 THUMB_SIZES = (64, 128, 256, 512, 1024)
 DEFAULT_THUMB = 512
 
@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS tracks (
     size      INTEGER NOT NULL,
     title     TEXT, artist TEXT, album TEXT,
     duration  INTEGER, date TEXT, mtime INTEGER,
-    cover     TEXT
+    cover     TEXT,
+    rg_tg REAL, rg_tp REAL, rg_ag REAL, rg_ap REAL   -- ReplayGain: трек/альбом, gain (дБ) / peak
 );
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 """
@@ -91,16 +92,25 @@ def _make_thumb(data: bytes, size: int) -> bytes:
     return buf.getvalue()
 
 
+def _rg_dict(tg, tp, ag, ap):
+    """ReplayGain для фронтенда: {tg, tp, ag, ap} или None, если тегов нет."""
+    if tg is None and ag is None:
+        return None
+    return {"tg": tg, "tp": tp, "ag": ag, "ap": ap}
+
+
 class Library:
     def __init__(self, music_dir: str, db_path: str, cover_dir: str,
                  read_meta: Callable[[str], dict],
                  read_cover: Callable[[str], tuple],
-                 allowed_ext):
+                 allowed_ext,
+                 read_rg: Optional[Callable[[str], Optional[dict]]] = None):
         self.music_dir = os.path.abspath(music_dir)
         self.db_path = db_path
         self.cover_dir = cover_dir
         self._read_meta = read_meta
         self._read_cover = read_cover
+        self._read_rg = read_rg
         self.allowed_ext = frozenset(allowed_ext)
 
         self.on_change: Optional[Callable[[], None]] = None
@@ -198,7 +208,8 @@ class Library:
             db.executemany(
                 "INSERT OR REPLACE INTO tracks "
                 "(id, rel_path, mtime_ns, size, title, artist, album, "
-                " duration, date, mtime, cover) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                " duration, date, mtime, cover, rg_tg, rg_tp, rg_ag, rg_ap) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 rows)
         self._bump()
 
@@ -225,7 +236,8 @@ class Library:
             if self._tracks_cache is None:
                 rows = self._db.execute(
                     "SELECT id, rel_path, title, artist, album, duration, date, "
-                    "mtime, cover FROM tracks ORDER BY rel_path COLLATE NOCASE"
+                    "mtime, cover, rg_tg, rg_tp, rg_ag, rg_ap "
+                    "FROM tracks ORDER BY rel_path COLLATE NOCASE"
                 ).fetchall()
                 self._tracks_cache = [{
                     "id": r["id"], "file": r["rel_path"],
@@ -233,6 +245,7 @@ class Library:
                     "duration": r["duration"], "date": r["date"], "mtime": r["mtime"],
                     "hasCover": r["cover"] is not None,
                     "cover": r["cover"],           # хэш обложки (для ?v=)
+                    "rg": _rg_dict(r["rg_tg"], r["rg_tp"], r["rg_ag"], r["rg_ap"]),
                 } for r in rows]
             return self._tracks_cache
 
@@ -332,6 +345,7 @@ class Library:
         try:
             meta = self._read_meta(full)
             data, _ = self._read_cover(full)
+            rg = (self._read_rg(full) if self._read_rg else None) or {}
         except Exception as e:
             log.warning("read %s: %s", full, e)
             return None
@@ -339,7 +353,8 @@ class Library:
                 meta["title"], meta["artist"], meta["album"],
                 int(meta.get("duration") or 0), meta.get("date") or "",
                 int(meta.get("mtime") or 0),
-                _cover_hash(data) if data else None)
+                _cover_hash(data) if data else None,
+                rg.get("tg"), rg.get("tp"), rg.get("ag"), rg.get("ap"))
 
     def sync(self) -> bool:
         """Инкрементальный проход: парсим только новые/изменённые, чистим удалённые."""
