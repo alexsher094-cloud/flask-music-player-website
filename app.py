@@ -10,11 +10,12 @@ from mutagen.apev2 import APEv2
 from mutagen.flac import FLAC
 from mutagen.mp4 import MP4
 
+import app_settings
 from library import Library, track_id_for  # noqa: F401  (track_id_for реэкспортируется для desktop.py)
 
 app = Flask(__name__)
 
-MUSIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "music")
+MUSIC_DIR = app_settings.DEFAULT_MUSIC_DIR
 ALLOWED_EXT = {".mp3", ".flac", ".m4a", ".ogg", ".opus", ".wav"}
 
 # Файлы, открытые «извне» (двойной клик, «Открыть с помощью», контекстное меню):
@@ -194,13 +195,14 @@ def extract_replaygain(path: str):
 # ============================================================
 # Потоки стартуют только после lib.start() — см. desktop.py / __main__ ниже.
 lib = Library(
-    music_dir=MUSIC_DIR,
+    music_dirs=app_settings.load_music_dirs(),
     db_path=os.path.join(_data_dir(), "library.db"),
     cover_dir=os.path.join(_data_dir(), "covers"),
     read_meta=extract_metadata,
     read_cover=extract_cover,
     allowed_ext=ALLOWED_EXT,
     read_rg=extract_replaygain,
+    legacy_root_path=MUSIC_DIR,
 )
 
 
@@ -238,6 +240,41 @@ def api_library_version():
 def api_library_rescan():
     lib.request_rescan()
     return jsonify(ok=True)
+
+
+def _library_payload() -> dict:
+    folders = lib.folders()
+    return {
+        "folders": folders,
+        "track_count": lib.track_count(),
+        "scanning": lib.is_scanning(),
+        "version": lib.version,
+    }
+
+
+@app.route("/api/library/folders")
+def api_library_folders():
+    return jsonify(_library_payload())
+
+
+@app.route("/api/library/folders", methods=["POST"])
+def api_library_folder_add():
+    data = request.get_json(silent=True) or {}
+    ok, error = lib.add_music_dir(data.get("path", ""))
+    if not ok:
+        return jsonify({"ok": False, "error": error}), 400
+    app_settings.save_music_dirs(lib.music_dirs())
+    return jsonify({"ok": True, **_library_payload()})
+
+
+@app.route("/api/library/folders/remove", methods=["POST"])
+def api_library_folder_remove():
+    data = request.get_json(silent=True) or {}
+    ok, error = lib.remove_music_dir(data.get("path", ""))
+    if not ok:
+        return jsonify({"ok": False, "error": error}), 400
+    app_settings.save_music_dirs(lib.music_dirs())
+    return jsonify({"ok": True, **_library_payload()})
 
 
 @app.route("/api/stream/<track_id>")
@@ -291,15 +328,15 @@ def api_cover(track_id):
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    if not os.path.isdir(MUSIC_DIR):
-        os.makedirs(MUSIC_DIR)
     debug = os.environ.get("FLASK_DEBUG", "0") == "1"
 
     # с reloader'ом процесс запускается дважды — библиотеку стартуем только в рабочем
     if not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
         lib.start()
 
-    print(f" Музыка: {MUSIC_DIR}")
+    print(" Музыка:")
+    for folder in lib.music_dirs():
+        print(f"   {folder}")
     print(f" Кэш:    {_data_dir()}")
     print(f" Debug: {'ON' if debug else 'OFF'}")
     app.run(host="0.0.0.0", port=5000, debug=debug)

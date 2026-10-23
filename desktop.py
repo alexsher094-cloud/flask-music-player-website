@@ -589,6 +589,18 @@ class WindowApi:
         if self._hwnd and edge in HT_RESIZE_CODES:
             user32.PostMessageW(self._hwnd, WM_APP_NCACTION, edge, 0)
 
+    def pick_music_folder(self) -> str:
+        """Системный диалог выбора папки для библиотеки (Windows)."""
+        if not self._window:
+            return ""
+        try:
+            result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+            if result:
+                return os.path.abspath(result[0])
+        except Exception as e:
+            _log(f"pick_music_folder: {e}")
+        return ""
+
     def set_background(self, css_color: str) -> bool:
         rgb = _parse_css_color(css_color)
         if not rgb or not self._window:

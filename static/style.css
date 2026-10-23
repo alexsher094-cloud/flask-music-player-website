@@ -1309,6 +1309,124 @@ input { font-family: inherit; }
 }
 
 /* ============================================================
+   LIBRARY SETTINGS
+   ============================================================ */
+.library-section {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: none;
+}
+
+.library-header-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
+    flex-shrink: 0;
+}
+
+.library-header-actions .btn-reset-eq {
+    white-space: nowrap;
+}
+
+.library-folders {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.library-folder {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 13px 14px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+}
+
+.library-folder-main {
+    flex: 1;
+    min-width: 0;
+}
+
+.library-folder-path {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13.5px;
+    font-weight: 500;
+    color: var(--text);
+}
+
+.library-folder-meta {
+    margin-top: 3px;
+    font-size: 12px;
+    color: var(--text-3);
+}
+
+.library-folder-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    flex-shrink: 0;
+    border-radius: 8px;
+    color: var(--text-3);
+    font-size: 22px;
+    line-height: 1;
+    transition: all 0.15s var(--ease);
+}
+
+.library-folder-remove:hover {
+    color: #ff6b6b;
+    background: rgba(255, 107, 107, 0.12);
+}
+
+.library-folder.unavailable .library-folder-path {
+    color: var(--text-3);
+}
+
+.library-folder.unavailable .library-folder-meta {
+    color: #f5b642;
+}
+
+.library-empty {
+    padding: 22px;
+    text-align: center;
+    color: var(--text-3);
+    background: var(--bg-surface);
+    border: 1px dashed var(--border-2);
+    border-radius: 12px;
+}
+
+.library-status {
+    min-height: 18px;
+    margin-top: 10px;
+    font-size: 12.5px;
+    color: var(--text-3);
+}
+
+.library-status.error {
+    color: #ff6b6b;
+}
+
+@media (max-width: 760px) {
+    .library-section .theme-header {
+        align-items: flex-start;
+        flex-wrap: wrap;
+    }
+
+    .library-header-actions {
+        width: 100%;
+        justify-content: flex-start;
+        padding-left: 84px;
+    }
+}
+
+/* ============================================================
    THEME SECTION
    ============================================================ */
 .theme-section {

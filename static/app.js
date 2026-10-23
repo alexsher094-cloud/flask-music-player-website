@@ -846,13 +846,13 @@ function showEmptyState() {
         $("#empty-text").innerHTML = "Отмечай треки сердечком, чтобы они появились здесь";
     } else if (state.view === "albums") {
         $("#empty-title").textContent = "Альбомов нет";
-        $("#empty-text").innerHTML = "Добавь музыку с тегами альбома в папку <code>music/</code>";
+        $("#empty-text").innerHTML = "Добавь папку с музыкой в настройках библиотеки";
     } else if (state.view === "artists") {
         $("#empty-title").textContent = "Артистов нет";
-        $("#empty-text").innerHTML = "Добавь музыку в папку <code>music/</code>";
+        $("#empty-text").innerHTML = "Добавь папку с музыкой в настройках библиотеки";
     } else {
-        $("#empty-title").textContent = "Папка пуста";
-        $("#empty-text").innerHTML = "Добавь музыку в папку <code>music/</code>";
+        $("#empty-title").textContent = "Библиотека пуста";
+        $("#empty-text").innerHTML = "Добавь папку с музыкой в настройках библиотеки";
     }
 }
 
@@ -1943,6 +1943,184 @@ function initDiscordSettings() {
 }
 
 /* ============================================================
+   LIBRARY SETTINGS
+   ============================================================ */
+function initLibrarySettings() {
+    const section = $("#library-section");
+    if (!section || section.dataset.ready === "1") return;
+    section.dataset.ready = "1";
+
+    const list = $("#library-folders");
+    const status = $("#library-status");
+    const addBtn = $("#library-add");
+    const rescanBtn = $("#library-rescan");
+    if (!list || !status) return;
+
+    let refreshing = false;
+
+    const setStatus = (text, isError = false) => {
+        status.textContent = text || "";
+        status.classList.toggle("error", !!isError);
+    };
+
+    const plural = (n, one, few, many) => {
+        const d = n % 10, dd = n % 100;
+        const word = d === 1 && dd !== 11 ? one
+            : d >= 2 && d <= 4 && (dd < 12 || dd > 14) ? few
+            : many;
+        return `${n} ${word}`;
+    };
+
+    const request = async (url, options = {}) => {
+        const res = await fetch(url, options);
+        let data = {};
+        try { data = await res.json(); } catch (e) { /* ignore */ }
+        if (!res.ok) throw new Error(data.error || "Ошибка запроса");
+        return data;
+    };
+
+    const applyPayload = (data) => {
+        const folders = Array.isArray(data.folders) ? data.folders : [];
+        list.textContent = "";
+
+        if (!folders.length) {
+            const empty = document.createElement("div");
+            empty.className = "library-empty";
+            empty.textContent = "Папок пока нет. Добавь папку с музыкой.";
+            list.appendChild(empty);
+        }
+
+        for (const folder of folders) {
+            const row = document.createElement("div");
+            row.className = "library-folder" + (folder.available ? "" : " unavailable");
+
+            const main = document.createElement("div");
+            main.className = "library-folder-main";
+
+            const path = document.createElement("div");
+            path.className = "library-folder-path";
+            path.textContent = folder.path;
+            path.title = folder.path;
+
+            const meta = document.createElement("div");
+            meta.className = "library-folder-meta";
+            const parts = [];
+            if (!folder.available) parts.push("недоступна");
+            else parts.push(plural(folder.track_count || 0, "трек", "трека", "треков"));
+            meta.textContent = parts.join(" · ");
+
+            const remove = document.createElement("button");
+            remove.type = "button";
+            remove.className = "library-folder-remove";
+            remove.textContent = "×";
+            remove.title = "Убрать папку из библиотеки";
+            remove.setAttribute("aria-label", "Убрать папку из библиотеки");
+            remove.addEventListener("click", () => removeFolder(folder.path));
+
+            main.appendChild(path);
+            main.appendChild(meta);
+            row.appendChild(main);
+            row.appendChild(remove);
+            list.appendChild(row);
+        }
+
+        if (data.scanning) {
+            setStatus("Сканирование библиотеки…");
+        } else {
+            const total = data.track_count ?? folders.reduce(
+                (n, f) => n + (f.track_count || 0), 0);
+            setStatus(`Папок: ${folders.length} · Треков: ${total}`);
+        }
+
+        // При сканировании версия библиотеки меняется — подтягиваем список.
+        if (data.version !== state.libVersion) loadTracks();
+    };
+
+    const refresh = async () => {
+        if (refreshing) return;
+        refreshing = true;
+        try {
+            applyPayload(await request("/api/library/folders"));
+        } catch (e) {
+            setStatus(e.message || "Не удалось загрузить библиотеку", true);
+        } finally {
+            refreshing = false;
+        }
+    };
+
+    const addFolder = async (path) => {
+        if (!path) return;
+        addBtn && (addBtn.disabled = true);
+        setStatus("Добавляем папку…");
+        try {
+            const data = await request("/api/library/folders", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ path }),
+            });
+            applyPayload(data);
+            loadTracks();
+        } catch (e) {
+            setStatus(e.message || "Не удалось добавить папку", true);
+        } finally {
+            addBtn && (addBtn.disabled = false);
+        }
+    };
+
+    const removeFolder = async (path) => {
+        const ok = window.confirm(
+            `Убрать папку из библиотеки?\n\n${path}\n\nФайлы на диске не будут удалены.`);
+        if (!ok) return;
+        setStatus("Убираем папку…");
+        try {
+            const data = await request("/api/library/folders/remove", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ path }),
+            });
+            applyPayload(data);
+            loadTracks();
+        } catch (e) {
+            setStatus(e.message || "Не удалось убрать папку", true);
+        }
+    };
+
+    if (addBtn) {
+        addBtn.addEventListener("click", async () => {
+            const picker = winApi("pick_music_folder");
+            let path = "";
+            if (picker) {
+                try { path = await picker(); } catch (e) { path = ""; }
+            } else {
+                path = window.prompt("Введите путь к папке с музыкой:");
+            }
+            if (path) addFolder(String(path).trim());
+        });
+    }
+
+    if (rescanBtn) {
+        rescanBtn.addEventListener("click", async () => {
+            rescanBtn.disabled = true;
+            setStatus("Запускаем сканирование…");
+            try {
+                await request("/api/library/rescan", { method: "POST" });
+                await refresh();
+                setTimeout(refresh, 1200);
+            } catch (e) {
+                setStatus(e.message || "Не удалось запустить сканирование", true);
+            } finally {
+                rescanBtn.disabled = false;
+            }
+        });
+    }
+
+    refresh();
+    setInterval(() => {
+        if (state.view === "settings") refresh();
+    }, 2000);
+}
+
+/* ============================================================
    SEARCH
    ============================================================ */
 const searchInput = $("#search-input");
@@ -2246,6 +2424,7 @@ updatePlayerFavBtn();
 updateShuffleUI();
 updateRepeatUI();
 initEQ();
+initLibrarySettings();
 initDiscordSettings();
 setupMediaSessionHandlers();
 

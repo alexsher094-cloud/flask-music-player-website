@@ -14,6 +14,8 @@ import urllib.error
 import urllib.request
 from ctypes import wintypes
 
+from app_settings import data_dir, load_settings, save_settings
+
 _MUTEX_NAME = "Local\\MusicPlayer.SingleInstance.v1"
 _ERROR_ALREADY_EXISTS = 183
 
@@ -29,50 +31,8 @@ _mutex = None  # держим хэндл до конца процесса
 
 
 # ---------- папка данных / настройки ----------
-def data_dir() -> str:
-    base = os.environ.get("APPDATA") or os.path.expanduser("~")
-    path = os.path.join(base, "Music")
-    os.makedirs(path, exist_ok=True)
-    return path
-
-
 def _info_path() -> str:
     return os.path.join(data_dir(), "instance.json")
-
-
-def _settings_path() -> str:
-    return os.path.join(data_dir(), "settings.json")
-
-
-_DEFAULTS = {
-    "close_to_tray": True,
-    "window": None,
-    "discord_presence": True,
-    "discord_client_id": "",
-    "discord_large_image": "",
-}
-
-
-def load_settings() -> dict:
-    data = dict(_DEFAULTS)
-    try:
-        with open(_settings_path(), encoding="utf-8") as f:
-            loaded = json.load(f)
-        if isinstance(loaded, dict):
-            data.update(loaded)
-    except (OSError, ValueError):
-        pass
-    return data
-
-
-def save_settings(settings: dict) -> None:
-    try:
-        tmp = _settings_path() + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(settings, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, _settings_path())
-    except OSError:
-        pass
 
 
 # ---------- single instance ----------
