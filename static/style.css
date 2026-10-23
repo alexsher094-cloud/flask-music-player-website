@@ -2180,6 +2180,45 @@ body.mini-mode #btn-mini {
     display: none !important;
 }
 
+/* Высота мини-окна фиксирована — верхние/нижние края и углы для ресайза не нужны */
+body.mini-mode .rz-top,
+body.mini-mode .rz-bottom,
+body.mini-mode .rz-topleft,
+body.mini-mode .rz-topright,
+body.mini-mode .rz-bottomleft,
+body.mini-mode .rz-bottomright {
+    display: none;
+}
+
+/* Заголовка в мини-режиме нет: окно тянется за плеер, а выход/закрытие — угловые кнопки */
+body.mini-mode .player { position: relative; user-select: none; -webkit-user-select: none; }
+
+.mini-corner { display: none; }
+
+body.mini-mode .mini-corner {
+    position: absolute;
+    top: 4px;
+    right: 6px;
+    z-index: 5;
+    display: flex;
+    gap: 2px;
+}
+
+.mini-corner-btn {
+    width: 22px;
+    height: 22px;
+    display: grid;
+    place-items: center;
+    border-radius: 6px;
+    color: var(--text-2);
+    opacity: 0.75;
+    transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+
+.mini-corner-btn svg { width: 13px; height: 13px; }
+.mini-corner-btn:hover { opacity: 1; color: var(--text); background: var(--bg-active); }
+#btn-mini-close:hover { color: #fff; background: #e5484d; }
+
 body.mini-mode .app {
     grid-template-columns: 1fr;
     grid-template-rows: 1fr;
@@ -2194,21 +2233,48 @@ body.mini-mode .player {
     grid-area: player;
     height: 100%;
     display: grid;
-    grid-template-columns: auto 1fr auto;
-    grid-template-rows: 1fr auto;
+    /* Центр (кнопки) и правая колонка (избранное/звук) — фиксированной ширины по своему
+       содержимому, всё остальное достаётся названию. Положение кнопок и длина полосы
+       прогресса поэтому НЕ зависят от длины названия трека и исполнителя. */
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-rows: minmax(0, 1fr) auto;
     grid-template-areas:
-        "left    center  right"
+        "left     center   right"
         "progress progress progress";
-    gap: 4px 12px;
+    gap: 4px 10px;
     padding: 8px 12px;
     border-radius: 0;
     border: none;
+    overflow: hidden;
 }
 
-body.mini-mode .player-left    { grid-area: left;     min-width: 0; }
-body.mini-mode .player-center  { grid-area: center;   min-width: 0; }
-body.mini-mode .player-right   { grid-area: right;    min-width: 0; gap: 4px; }
-body.mini-mode .player-progress{ grid-area: progress; width: 100%; }
+body.mini-mode .player-left { grid-area: left; min-width: 0; gap: 10px; }
+
+/* .player-center — лишь обёртка над кнопками и полосой прогресса. Растворяем её, чтобы
+   они стали прямыми ячейками сетки .player: иначе grid-area у полосы не срабатывает,
+   и она ужимается вместе с центральной колонкой. */
+body.mini-mode .player-center { display: contents; }
+
+body.mini-mode .player-controls {
+    grid-area: center;
+    justify-self: center;
+    gap: 2px;
+}
+
+body.mini-mode .player-right {
+    grid-area: right;
+    justify-self: end;
+    min-width: 0;
+    gap: 2px;
+}
+
+body.mini-mode .player-progress {
+    grid-area: progress;
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    gap: 8px;
+}
 
 body.mini-mode .player-cover {
     width: 48px;
@@ -2219,29 +2285,10 @@ body.mini-mode .player-cover {
 body.mini-mode .player-title  { font-size: 13px; }
 body.mini-mode .player-artist { font-size: 11px; }
 
-body.mini-mode .player-center {
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-    align-items: center;
-    justify-content: center;
-}
-
-body.mini-mode .player-controls {
-    gap: 8px;
-}
-
-body.mini-mode .ctrl-btn.play-btn {
-    width: 36px;
-    height: 36px;
-}
-
-body.mini-mode .ctrl-btn.play-btn svg { width: 18px; height: 18px; }
-
-body.mini-mode .player-progress {
-    max-width: none;
-    gap: 8px;
-}
+body.mini-mode .player-controls .ctrl-btn { width: 28px; height: 28px; }
+body.mini-mode .player-controls .ctrl-btn svg { width: 16px; height: 16px; }
+body.mini-mode .player-controls .ctrl-btn.play-btn { width: 34px; height: 34px; }
+body.mini-mode .player-controls .ctrl-btn.play-btn svg { width: 18px; height: 18px; }
 
 body.mini-mode .time { font-size: 10.5px; min-width: 30px; }
 /* ============================================================

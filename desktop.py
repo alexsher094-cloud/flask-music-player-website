@@ -58,6 +58,7 @@ WNDPROC = ctypes.WINFUNCTYPE(
 )
 
 WM_SIZE          = 0x0005
+WM_GETMINMAXINFO = 0x0024
 WM_ACTIVATE      = 0x0006
 WM_NCCALCSIZE    = 0x0083
 WM_NCACTIVATE    = 0x0086
@@ -165,6 +166,12 @@ dwmapi.DwmSetWindowAttribute.restype  = ctypes.c_long
 
 shell32.SHAppBarMessage.argtypes = [wintypes.DWORD, ctypes.POINTER(APPBARDATA)]
 shell32.SHAppBarMessage.restype  = ctypes.c_size_t
+
+
+class MINMAXINFO(ctypes.Structure):
+    _fields_ = [("ptReserved", wintypes.POINT), ("ptMaxSize", wintypes.POINT),
+                ("ptMaxPosition", wintypes.POINT), ("ptMinTrackSize", wintypes.POINT),
+                ("ptMaxTrackSize", wintypes.POINT)]
 
 
 class WINDOWPLACEMENT(ctypes.Structure):
@@ -399,6 +406,19 @@ class WindowApi:
                 if self._integration:
                     self._integration.handle_command(int(wparam), int(lparam))
 
+            if msg == WM_GETMINMAXINFO:
+                # Минимальный размер окна задаёт pywebview (WINDOW_MIN = 460x500) — для
+                # мини-режима (460x140) его нужно переопределить, иначе окно не уменьшится.
+                res = user32.CallWindowProcW(old, hwnd, msg, wparam, lparam)
+                limits = self._integration.mini_limits() if self._integration else None
+                if limits and lparam:
+                    min_w, height = limits
+                    mmi = ctypes.cast(lparam, ctypes.POINTER(MINMAXINFO)).contents
+                    mmi.ptMinTrackSize.x = min_w
+                    mmi.ptMinTrackSize.y = height
+                    mmi.ptMaxTrackSize.y = height      # высота мини-окна фиксирована
+                return res
+
             if msg == WM_SIZE:
                 res = user32.CallWindowProcW(old, hwnd, msg, wparam, lparam)
                 zoomed = bool(user32.IsZoomed(hwnd))
@@ -438,7 +458,8 @@ class WindowApi:
             return
 
         if hit == HTCAPTION:
-            if self._is_double_click(pt):
+            in_mini = bool(self._integration and self._integration.is_mini())
+            if not in_mini and self._is_double_click(pt):
                 self._post_syscommand(
                     SC_RESTORE if user32.IsZoomed(hwnd) else SC_MAXIMIZE)
                 return
@@ -616,6 +637,9 @@ class WindowApi:
             return True
         return False
 
+    def is_mini_mode(self) -> bool:
+        return bool(self._integration and self._integration.is_mini())
+
 
 def _parse_css_color(value):
     if not isinstance(value, str):
@@ -749,6 +773,18 @@ class AppController:
                 _log(f"{fn}: {e}")
         threading.Thread(target=run, daemon=True).start()
 
+    def is_mini(self) -> bool:
+        return bool(self.api and self.api.is_mini_mode())
+
+    def toggle_mini(self):
+        """Мини-режим из меню трея (окно может быть спрятано — тогда сначала показываем)."""
+        integ = getattr(self.api, "_integration", None)
+        if not integ:
+            return
+        if not integ.is_mini():
+            self.show_window()
+        integ.toggle_mini_mode()
+
     def show_window(self):
         if not self.window:
             return
@@ -769,6 +805,18 @@ class AppController:
         hwnd = self.api._hwnd if self.api else None
         if not hwnd:
             return
+
+        # В мини-режиме сохраняем не крошечное окно, а обычное — каким оно было до входа.
+        integ = getattr(self.api, "_integration", None)
+        if integ is not None and integ.is_mini():
+            integ.mini.remember()
+            normal = integ.mini.normal_placement()
+            if normal:
+                l, t, r, b, mx = normal
+                self.settings["window"] = {"l": l, "t": t, "r": r, "b": b, "max": bool(mx)}
+                instance.save_settings(self.settings)
+            return
+
         wp = WINDOWPLACEMENT()
         wp.length = ctypes.sizeof(WINDOWPLACEMENT)
         if user32.GetWindowPlacement(hwnd, ctypes.byref(wp)):

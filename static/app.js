@@ -2108,6 +2108,28 @@ function initDesktopMode() {
         titlebar.addEventListener("contextmenu", (e) => e.preventDefault());
     }
 
+    // ---- мини-режим: заголовка нет, окно тянется за плеер ----
+    const playerEl = document.querySelector(".player");
+    if (playerEl) {
+        playerEl.addEventListener("mousedown", (e) => {
+            if (!document.body.classList.contains("mini-mode") || e.button !== 0) return;
+            if (e.target.closest("button, input, .progress-bar, .volume-bar")) return;
+            e.preventDefault();
+            api.start_drag();
+        });
+    }
+    bindBtn("btn-mini-exit",  () => api.set_mini_mode(false));
+    bindBtn("btn-mini-close", () => api.close());
+    document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && document.body.classList.contains("mini-mode")) {
+            api.set_mini_mode(false);
+        }
+    });
+    // после перезагрузки страницы подхватить состояние окна
+    if (api.is_mini_mode) {
+        api.is_mini_mode().then((v) => window.__onMiniMode(!!v)).catch(() => {});
+    }
+
     const EDGES = {
         left: 10, right: 11, top: 12, topleft: 13,
         topright: 14, bottom: 15, bottomleft: 16, bottomright: 17,

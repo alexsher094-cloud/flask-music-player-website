@@ -664,6 +664,20 @@
             </div>
         </div>
 
+        <!-- Мини-режим: заголовка нет, поэтому выход и закрытие — в углу плеера -->
+        <div class="mini-corner">
+            <button class="mini-corner-btn" id="btn-mini-exit" title="Обычный режим (Esc)" aria-label="Обычный режим">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/>
+                </svg>
+            </button>
+            <button class="mini-corner-btn" id="btn-mini-close" title="Закрыть" aria-label="Закрыть">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                    <path d="M6 6l12 12M18 6L6 18"/>
+                </svg>
+            </button>
+        </div>
+
         <audio id="audio" preload="metadata" crossorigin="anonymous"></audio>
     </footer>
 </div>

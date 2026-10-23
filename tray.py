@@ -53,6 +53,8 @@ class Tray:
             pystray.MenuItem("Следующий",      lambda i, it: c.click("btn-next")),
             pystray.MenuItem("Предыдущий",     lambda i, it: c.click("btn-prev")),
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Мини-режим", lambda i, it: c.toggle_mini(),
+                             checked=lambda it: c.is_mini()),
             pystray.MenuItem("Закрывать в трей", self._toggle_close_to_tray,
                              checked=lambda it: bool(c.settings.get("close_to_tray", True))),
             pystray.MenuItem("Discord Rich Presence", self._toggle_discord,

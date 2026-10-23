@@ -133,9 +133,46 @@ SWP_NOMOVE     = 0x0002
 SWP_NOSIZE     = 0x0001
 SWP_NOACTIVATE = 0x0010
 SW_RESTORE     = 9
+SW_SHOWNORMAL  = 1
+SW_SHOWMAXIMIZED = 3
+WPF_RESTORETOMAXIMIZED = 0x0002     # свёрнутое окно при восстановлении развернётся
 
-MINI_WIDTH  = 460
-MINI_HEIGHT = 140
+MONITOR_DEFAULTTONEAREST = 2
+
+# Мини-режим: логические пиксели (умножаются на DPI окна)
+MINI_WIDTH     = 460
+MINI_HEIGHT    = 140
+MINI_MIN_WIDTH = 420
+
+
+class _WINDOWPLACEMENT(ctypes.Structure):
+    _fields_ = [("length", wintypes.UINT), ("flags", wintypes.UINT),
+                ("showCmd", wintypes.UINT),
+                ("ptMinPosition", wintypes.POINT), ("ptMaxPosition", wintypes.POINT),
+                ("rcNormalPosition", wintypes.RECT)]
+
+
+class _MONITORINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+
+
+user32.GetWindowPlacement.argtypes = [wintypes.HWND, ctypes.POINTER(_WINDOWPLACEMENT)]
+user32.GetWindowPlacement.restype  = wintypes.BOOL
+user32.SetWindowPlacement.argtypes = [wintypes.HWND, ctypes.POINTER(_WINDOWPLACEMENT)]
+user32.SetWindowPlacement.restype  = wintypes.BOOL
+user32.IsIconic.argtypes = [wintypes.HWND]
+user32.IsIconic.restype  = wintypes.BOOL
+user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+user32.MonitorFromWindow.restype  = ctypes.c_void_p
+user32.MonitorFromRect.argtypes = [ctypes.POINTER(wintypes.RECT), wintypes.DWORD]
+user32.MonitorFromRect.restype  = ctypes.c_void_p
+user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.POINTER(_MONITORINFO)]
+user32.GetMonitorInfoW.restype  = wintypes.BOOL
+_get_dpi_for_window = getattr(user32, "GetDpiForWindow", None)   # Windows 10 1607+
+if _get_dpi_for_window is not None:
+    _get_dpi_for_window.argtypes = [wintypes.HWND]
+    _get_dpi_for_window.restype  = wintypes.UINT
 
 APP_USER_MODEL_ID = "Music.Player"
 
@@ -602,55 +639,167 @@ class _JumpListBridge:
 # МИНИ-РЕЖИМ
 # ============================================================
 class _MiniModeBridge:
+    """
+    Компактное окно поверх остальных.
+
+    Что здесь важно (все пункты — реальные причины поломки окна):
+      • self.mini выставляется ДО SetWindowPos. Минимальный размер окна задаёт
+        pywebview (WINDOW_MIN), и пока WM_GETMINMAXINFO в desktop.py не знает про
+        мини-режим, Windows зажимает высоту 140 px до 500 px.
+      • «Обычная» геометрия берётся из GetWindowPlacement: GetWindowRect у
+        свёрнутого окна возвращает -32000, и выход из мини-режима «уносил» окно
+        за экран.
+      • Размер масштабируется по DPI окна, позиция всегда зажимается в рабочую
+        область монитора (панель задач не перекрывается, второй монитор не
+        теряется), последняя позиция мини-окна запоминается в settings["mini"].
+      • Выход восстанавливает окно одним SetWindowPlacement (в т.ч. развёрнутое).
+    """
+
     def __init__(self, controller):
         self.controller = controller
         self.hwnd = None
         self.mini = False
-        self._saved_rect = None
-        self._saved_maximized = False
+        self._saved = None          # (l, t, r, b, maximized) обычного окна до входа
 
-    def _is_maximized(self) -> bool:
-        return bool(self.hwnd and user32.IsZoomed(self.hwnd))
+    # ---------- вспомогательное ----------
+    def _scale(self) -> float:
+        try:
+            if _get_dpi_for_window is not None and self.hwnd:
+                dpi = int(_get_dpi_for_window(self.hwnd))
+                if dpi >= 48:
+                    return dpi / 96.0
+        except Exception:
+            pass
+        return 1.0
 
+    def _settings(self):
+        s = getattr(self.controller, "settings", None)
+        return s if isinstance(s, dict) else None
+
+    def _persist(self) -> None:
+        s = self._settings()
+        if s is None:
+            return
+        try:
+            import instance
+            instance.save_settings(s)
+        except Exception:
+            pass
+
+    def _work_area(self, rect=None):
+        """Рабочая область монитора (без панели задач): у окна или у заданного прямоугольника."""
+        mon = None
+        try:
+            if rect is None:
+                mon = user32.MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST)
+            else:
+                rc = wintypes.RECT(*rect)
+                mon = user32.MonitorFromRect(ctypes.byref(rc), MONITOR_DEFAULTTONEAREST)
+            info = _MONITORINFO()
+            info.cbSize = ctypes.sizeof(_MONITORINFO)
+            if mon and user32.GetMonitorInfoW(mon, ctypes.byref(info)):
+                w = info.rcWork
+                return w.left, w.top, w.right, w.bottom
+        except Exception:
+            pass
+        return 0, 0, user32.GetSystemMetrics(SM_CXSCREEN), user32.GetSystemMetrics(SM_CYSCREEN)
+
+    def _target_rect(self):
+        """(x, y, w, h) мини-окна в пикселях."""
+        s = self._scale()
+        saved = (self._settings() or {}).get("mini")
+        logical_w, x, y = MINI_WIDTH, None, None
+        if isinstance(saved, dict):
+            try:
+                logical_w = max(MINI_MIN_WIDTH, int(saved.get("w", MINI_WIDTH)))
+                x, y = int(saved["x"]), int(saved["y"])
+            except (KeyError, TypeError, ValueError):
+                x = y = None
+        w, h = int(logical_w * s), int(MINI_HEIGHT * s)
+
+        if x is None:   # первый раз — правый нижний угол рабочей области
+            l, t, r, b = self._work_area(None)
+            margin = int(16 * s)
+            return r - w - margin, b - h - margin, w, h
+
+        l, t, r, b = self._work_area((x, y, x + w, y + h))
+        x = min(max(x, l), max(l, r - w))
+        y = min(max(y, t), max(t, b - h))
+        return x, y, w, h
+
+    # ---------- для desktop.py ----------
+    def limits(self):
+        """(мин. ширина, фиксированная высота) в пикселях для WM_GETMINMAXINFO; None — мини-режим выключен."""
+        if not self.mini:
+            return None
+        s = self._scale()
+        return int(MINI_MIN_WIDTH * s), int(MINI_HEIGHT * s)
+
+    def normal_placement(self):
+        """(l, t, r, b, maximized) обычного окна, пока включён мини-режим; иначе None."""
+        return self._saved if self.mini else None
+
+    def remember(self) -> None:
+        """Запомнить позицию/ширину мини-окна (вызывается при выходе и при закрытии приложения)."""
+        if not self.hwnd or not self.mini or user32.IsIconic(self.hwnd):
+            return
+        try:
+            r = wintypes.RECT()
+            st = self._settings()
+            if st is None or not user32.GetWindowRect(self.hwnd, ctypes.byref(r)):
+                return
+            st["mini"] = {"x": int(r.left), "y": int(r.top),
+                          "w": int(round((r.right - r.left) / self._scale()))}
+            self._persist()
+        except Exception as e:
+            print(f"[MiniMode] remember: {e}", file=sys.stderr)
+
+    # ---------- вход / выход ----------
     def enter(self):
         if not self.hwnd or self.mini:
             return
         try:
-            self._saved_maximized = self._is_maximized()
-            if self._saved_maximized:
+            wp = _WINDOWPLACEMENT()
+            wp.length = ctypes.sizeof(_WINDOWPLACEMENT)
+            if not user32.GetWindowPlacement(self.hwnd, ctypes.byref(wp)):
+                return
+            r = wp.rcNormalPosition
+            maximized = bool(user32.IsZoomed(self.hwnd)) or bool(wp.flags & WPF_RESTORETOMAXIMIZED)
+            self._saved = (r.left, r.top, r.right, r.bottom, maximized)
+
+            if user32.IsIconic(self.hwnd) or user32.IsZoomed(self.hwnd):
                 user32.ShowWindow(self.hwnd, SW_RESTORE)
 
-            r = wintypes.RECT()
-            user32.GetWindowRect(self.hwnd, ctypes.byref(r))
-            self._saved_rect = (r.left, r.top, r.right, r.bottom)
-
-            sw = user32.GetSystemMetrics(SM_CXSCREEN)
-            sh = user32.GetSystemMetrics(SM_CYSCREEN)
-
-            w, h = MINI_WIDTH, MINI_HEIGHT
-            x = max(0, sw - w - 24)
-            y = max(0, sh - h - 64)
-
+            x, y, w, h = self._target_rect()
+            self.mini = True        # ДО SetWindowPos — иначе высоту зажмёт WINDOW_MIN
             user32.SetWindowPos(self.hwnd, HWND_TOPMOST, x, y, w, h, 0)
-            self.mini = True
             self.controller.eval("window.__onMiniMode && window.__onMiniMode(true)")
         except Exception as e:
+            self.mini = False
+            self._saved = None
             print(f"[MiniMode] enter: {e}", file=sys.stderr)
 
     def exit(self):
         if not self.hwnd or not self.mini:
             return
         try:
-            if self._saved_rect:
-                l, t, r, b = self._saved_rect
-                user32.SetWindowPos(self.hwnd, HWND_NOTOPMOST,
-                                    l, t, r - l, b - t, 0)
-            self._saved_rect = None
-            self.mini = False
-            if self._saved_maximized:
-                user32.PostMessageW(self.hwnd, WM_SYSCOMMAND, SC_MAXIMIZE, 0)
+            self.remember()
+            saved, self._saved = self._saved, None
+            self.mini = False       # сначала снять фиксацию высоты
+
+            user32.SetWindowPos(self.hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+            if saved:
+                l, t, r, b, maximized = saved
+                wp = _WINDOWPLACEMENT()
+                wp.length = ctypes.sizeof(_WINDOWPLACEMENT)
+                if user32.GetWindowPlacement(self.hwnd, ctypes.byref(wp)):
+                    wp.rcNormalPosition = wintypes.RECT(l, t, r, b)
+                    wp.showCmd = SW_SHOWMAXIMIZED if maximized else SW_SHOWNORMAL
+                    user32.SetWindowPlacement(self.hwnd, ctypes.byref(wp))
             self.controller.eval("window.__onMiniMode && window.__onMiniMode(false)")
         except Exception as e:
+            self.mini = False
             print(f"[MiniMode] exit: {e}", file=sys.stderr)
 
     def toggle(self):
@@ -854,3 +1003,6 @@ class WindowsIntegration:
 
     def is_mini(self) -> bool:
         return self.mini.mini
+
+    def mini_limits(self):
+        return self.mini.limits()
