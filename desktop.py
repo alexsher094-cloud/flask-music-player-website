@@ -196,7 +196,8 @@ def _log(msg: str) -> None:
     print(f"[WIN32] {msg}", file=sys.stderr)
 
 
-def _maximized_client_rect(hwnd):
+def _monitor_rects(hwnd):
+    """(rcMonitor, rcWork) монитора, на котором находится окно."""
     mon = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
     if not mon:
         return None
@@ -204,9 +205,17 @@ def _maximized_client_rect(hwnd):
     mi.cbSize = ctypes.sizeof(MONITORINFO)
     if not user32.GetMonitorInfoW(mon, ctypes.byref(mi)):
         return None
+    return mi.rcMonitor, mi.rcWork
 
-    left, top = mi.rcWork.left, mi.rcWork.top
-    right, bottom = mi.rcWork.right, mi.rcWork.bottom
+
+def _maximized_client_rect(hwnd):
+    rects = _monitor_rects(hwnd)
+    if not rects:
+        return None
+    rc_monitor, rc_work = rects
+
+    left, top = rc_work.left, rc_work.top
+    right, bottom = rc_work.right, rc_work.bottom
 
     try:
         for edge in range(4):
@@ -214,7 +223,7 @@ def _maximized_client_rect(hwnd):
             abd.cbSize = ctypes.sizeof(APPBARDATA)
             abd.hWnd = hwnd
             abd.uEdge = edge
-            abd.rc = mi.rcMonitor
+            abd.rc = rc_monitor
             if shell32.SHAppBarMessage(ABM_GETAUTOHIDEBAREX, ctypes.byref(abd)):
                 if edge == 0:   left   += 1
                 elif edge == 1: top    += 1
@@ -410,13 +419,26 @@ class WindowApi:
                 # Минимальный размер окна задаёт pywebview (WINDOW_MIN = 460x500) — для
                 # мини-режима (460x140) его нужно переопределить, иначе окно не уменьшится.
                 res = user32.CallWindowProcW(old, hwnd, msg, wparam, lparam)
-                limits = self._integration.mini_limits() if self._integration else None
-                if limits and lparam:
-                    min_w, height = limits
+                if lparam:
                     mmi = ctypes.cast(lparam, ctypes.POINTER(MINMAXINFO)).contents
-                    mmi.ptMinTrackSize.x = min_w
-                    mmi.ptMinTrackSize.y = height
-                    mmi.ptMaxTrackSize.y = height      # высота мини-окна фиксирована
+                    limits = self._integration.mini_limits() if self._integration else None
+                    if limits:
+                        min_w, height = limits
+                        mmi.ptMinTrackSize.x = min_w
+                        mmi.ptMinTrackSize.y = height
+                        mmi.ptMaxTrackSize.y = height      # высота мини-окна фиксирована
+                    else:
+                        # Окно без рамки Windows разворачивает на весь монитор, а клиентская
+                        # область мы задаём равной рабочей (WM_NCCALCSIZE) — внизу оставалась
+                        # чёрная полоса высотой с панель задач. Ограничиваем maximize рабочей
+                        # областью, чтобы rect окна и клиентская область совпадали.
+                        rects = _monitor_rects(hwnd)
+                        if rects:
+                            rc_monitor, rc_work = rects
+                            mmi.ptMaxPosition.x = rc_work.left - rc_monitor.left
+                            mmi.ptMaxPosition.y = rc_work.top - rc_monitor.top
+                            mmi.ptMaxSize.x = rc_work.right - rc_work.left
+                            mmi.ptMaxSize.y = rc_work.bottom - rc_work.top
                 return res
 
             if msg == WM_SIZE:
