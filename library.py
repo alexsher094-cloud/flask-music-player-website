@@ -28,7 +28,7 @@ from typing import Callable, Optional
 
 log = logging.getLogger("library")
 
-SCHEMA_VERSION = 3            # v3: несколько корневых папок (roots + tracks.root_id)
+SCHEMA_VERSION = 8            # v8: нормализация артистов и альбомов
 THUMB_SIZES = (64, 128, 256, 512, 1024)
 DEFAULT_THUMB = 512
 

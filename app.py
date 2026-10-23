@@ -11,6 +11,8 @@ from mutagen.flac import FLAC
 from mutagen.mp4 import MP4
 
 import app_settings
+from filename_parser import (UNKNOWN_ARTIST, normalize_album,
+                             normalize_artist, parse_filename)
 from library import Library, track_id_for  # noqa: F401  (track_id_for реэкспортируется для desktop.py)
 
 app = Flask(__name__)
@@ -59,12 +61,46 @@ def extract_cover(path: str):
     return None, None
 
 
+_ARTIST_PLACEHOLDERS = {
+    "", UNKNOWN_ARTIST.casefold(), "неизвестен", "unknown artist", "unknown",
+    "artist unknown", "без исполнителя", "n/a",
+}
+_TITLE_PLACEHOLDERS = {
+    "", "unknown", "unknown title", "untitled", "без названия", "неизвестно",
+}
+_ALBUM_PLACEHOLDERS = {
+    "", "unknown", "unknown album", "неизвестен", "без альбома",
+}
+
+
+def _tag_value(tags, key: str) -> str:
+    value = tags.get(key)
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else ""
+    return str(value).strip() if value is not None else ""
+
+
+def _is_placeholder(value: str, placeholders) -> bool:
+    return str(value or "").strip().casefold() in placeholders
+
+
+def _same_as_filename(value: str, filename: str) -> bool:
+    value = str(value or "").strip()
+    if not value:
+        return False
+    if os.path.splitext(value)[1].lower() in ALLOWED_EXT:
+        value = os.path.splitext(value)[0]
+    norm = lambda s: " ".join(s.split()).casefold()
+    return norm(value) == norm(filename)
+
+
 def extract_metadata(path: str) -> dict:
     filename = os.path.splitext(os.path.basename(path))[0]
+    parsed = parse_filename(filename)
     data = {
-        "title": filename,
-        "artist": "Неизвестный исполнитель",
-        "album": "",
+        "title": parsed["title"] or filename,
+        "artist": normalize_artist(parsed["artist"]) or UNKNOWN_ARTIST,
+        "album": normalize_album(parsed["album"]) or "",
         "duration": 0,
         "date": "",             # год/дата из тега
         "mtime": 0,             # время модификации файла
@@ -75,18 +111,29 @@ def extract_metadata(path: str) -> dict:
     except Exception:
         pass
 
+    tag_title = tag_artist = tag_album = tag_albumartist = ""
+
     try:
         audio = MutagenFile(path, easy=True)
         if audio is None:
             return data
 
         if audio.tags:
-            data["title"] = (audio.tags.get("title") or [filename])[0]
-            data["artist"] = (audio.tags.get("artist") or [data["artist"]])[0]
-            data["album"] = (audio.tags.get("album") or [""])[0]
+            tag_title = _tag_value(audio.tags, "title")
+            tag_artist = _tag_value(audio.tags, "artist")
+            tag_album = _tag_value(audio.tags, "album")
+            tag_albumartist = normalize_artist(
+                _tag_value(audio.tags, "albumartist"))
+
+            if tag_title:
+                data["title"] = tag_title
+            if tag_artist:
+                data["artist"] = tag_artist
+            if tag_album:
+                data["album"] = tag_album
             # Дата/год из тега (может быть "2023" или "2023-05-15")
-            date_tag = audio.tags.get("date") or audio.tags.get("year") or [""]
-            data["date"] = str(date_tag[0]) if date_tag[0] else ""
+            data["date"] = (_tag_value(audio.tags, "date")
+                            or _tag_value(audio.tags, "year"))
 
         if hasattr(audio, "info") and audio.info:
             data["duration"] = int(audio.info.length)
@@ -94,6 +141,45 @@ def extract_metadata(path: str) -> dict:
     except Exception:
         pass
 
+    # Убираем скобки и приводим список исполнителей к единому виду.
+    data["artist"] = normalize_artist(data["artist"])
+    data["album"] = normalize_album(data["album"])
+
+    # Некоторые теги содержат всё имя файла целиком — в этом случае
+    # используем разобранные части, а не мусорную строку.
+    if (_is_placeholder(data["title"], _TITLE_PLACEHOLDERS)
+            or _same_as_filename(data["title"], filename)):
+        if parsed["title"]:
+            data["title"] = parsed["title"]
+
+    # Если исполнителя в тегах нет (или там заглушка), берём его из имени.
+    artist_missing = _is_placeholder(data["artist"], _ARTIST_PLACEHOLDERS)
+    if artist_missing:
+        if parsed["artist"]:
+            data["artist"] = parsed["artist"]
+        elif (tag_albumartist
+              and not _is_placeholder(tag_albumartist,
+                                      _ARTIST_PLACEHOLDERS | {"various artists"})):
+            data["artist"] = tag_albumartist
+
+    # Название альбома из имени файла — только если тег пуст.
+    if _is_placeholder(data["album"], _ALBUM_PLACEHOLDERS) and parsed["album"]:
+        data["album"] = parsed["album"]
+
+    # Иногда имя файла бесполезно, но полное имя с исполнителем записано
+    # в тег title. Разбираем и его как запасной вариант.
+    if artist_missing and tag_title and not parsed["artist"]:
+        parsed_tag = parse_filename(tag_title)
+        if parsed_tag["artist"]:
+            data["artist"] = parsed_tag["artist"]
+            if parsed_tag["title"]:
+                data["title"] = parsed_tag["title"]
+            if (parsed_tag["album"]
+                    and _is_placeholder(data["album"], _ALBUM_PLACEHOLDERS)):
+                data["album"] = parsed_tag["album"]
+
+    data["artist"] = normalize_artist(data["artist"]) or UNKNOWN_ARTIST
+    data["album"] = normalize_album(data["album"])
     return data
 
 

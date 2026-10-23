@@ -5,14 +5,13 @@ tray.py — иконка в области уведомлений (pystray + Pil
 
 Важно:
     • start() и stop() идемпотентны — повторный вызов ничего не делает.
-    • stop() обнуляет _icon, чтобы GC не держал висящий ресурс и
-      Windows корректно получал NIM_DELETE.
-    • Если предыдущий запуск был убит (Ctrl+C, Task Manager),
-      «призрак» значка в трее исчезнет при наведении — это штатное
-      поведение Windows, не баг приложения.
+    • stop() дожидается, пока поток pystray обработает WM_STOP и вызовет
+      NIM_DELETE. Иначе процесс завершается раньше, чем Windows убирает
+      значок, и в трее остаётся «призрак» до наведения мышью.
 """
 
 import os
+import threading
 
 from PIL import Image, ImageDraw
 
@@ -39,6 +38,7 @@ class Tray:
         self._c = controller
         self._icon = None
         self._started = False
+        self._ready = threading.Event()
 
     def start(self) -> None:
         if self._started:
@@ -66,8 +66,23 @@ class Tray:
             pystray.MenuItem("Выход", lambda i, it: c.quit()),
         )
 
+        self._ready.clear()
         self._icon = pystray.Icon("MusicPlayer", make_icon(), "Music", menu)
-        self._icon.run_detached()
+
+        def setup(icon):
+            try:
+                icon.visible = True
+            finally:
+                self._ready.set()
+
+        try:
+            self._icon.run_detached(setup)
+            # Ждём, пока pystray создаст окно и покажет значок. Это нужно,
+            # чтобы stop() не вызвался раньше, чем _running станет True.
+            self._ready.wait(timeout=2.0)
+        except Exception:
+            self._icon = None
+            raise
         self._started = True
 
     def stop(self) -> None:
@@ -75,11 +90,19 @@ class Tray:
             self._started = False
             self._icon = None
             return
+        icon = self._icon
         try:
-            self._icon.stop()
+            icon.stop()
         except Exception:
             pass
         finally:
+            # pystray удаляет значок (NIM_DELETE) в своём потоке уже после
+            # WM_STOP. Без join процесс может умереть раньше, и Windows
+            # оставит значок-«призрак» до наведения мышью.
+            thread = getattr(icon, "_thread", None)
+            if (thread is not None and thread.is_alive()
+                    and thread is not threading.current_thread()):
+                thread.join(timeout=3.0)
             self._icon = None
             self._started = False
 

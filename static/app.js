@@ -578,8 +578,69 @@ function getAlbumYear(album) {
 }
 
 const UNKNOWN_ALBUM_NAME = "Без альбома";
+const UNKNOWN_ARTIST_NAME = "Неизвестный исполнитель";
+
+function stripBrackets(value) {
+    const text = String(value || "");
+    let round = 0;
+    let square = 0;
+    let out = "";
+    for (const ch of text) {
+        if (ch === "(") {
+            round += 1;
+        } else if (ch === ")") {
+            round = Math.max(0, round - 1);
+        } else if (ch === "[") {
+            square += 1;
+        } else if (ch === "]") {
+            square = Math.max(0, square - 1);
+        } else if (round === 0 && square === 0) {
+            out += ch;
+        }
+    }
+    return out.replace(/\s+/g, " ").trim();
+}
+
+function cleanAlbumName(value) {
+    return stripBrackets(value)
+        .replace(/^[\s\-–—,;]+|[\s\-–—,;]+$/g, "");
+}
+
+function unwrapBrackets(value) {
+    return String(value || "")
+        .replace(/[\[\]()]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function splitArtistNames(value) {
+    let text = stripBrackets(value);
+    if (!text) return [];
+    text = text
+        .replace(/\s+(?:feat\.?|ft\.?|featuring)\s+/gi, ", ")
+        .replace(/\s*&\s*/g, ", ")
+        .replace(/\s*;\s*/g, ", ")
+        .replace(/\s+[x×]\s+/gi, ", ")
+        .replace(/\s+vs\.?\s+/gi, ", ")
+        .replace(/\s+\+\s+/g, ", ");
+
+    const names = [];
+    const seen = new Set();
+    for (const part of text.split(/\s*,\s*/)) {
+        const name = part
+            .replace(/^[\s\-–—,;&]+|[\s\-–—,;&]+$/g, "")
+            .trim();
+        if (!name) continue;
+        const key = name.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        names.push(name);
+    }
+    return names;
+}
+
 function isUnknownAlbum(album) {
-    return album.name === UNKNOWN_ALBUM_NAME;
+    return !!album.unnamed;
 }
 
 /* ============================================================
@@ -680,19 +741,48 @@ async function loadTracks() {
 function buildAlbums() {
     const map = new Map();
     state.tracks.forEach(track => {
-        const albumName = (track.album || "").trim() || UNKNOWN_ALBUM_NAME;
-        const artist = (track.artist || "").trim() || "Неизвестный";
-        const key = `${albumName}::${artist}`;
+        const albumName = cleanAlbumName(track.album);
+        const artistNames = splitArtistNames(track.artist);
+        if (!artistNames.length) artistNames.push(UNKNOWN_ARTIST_NAME);
+        const artist = artistNames[0];
+        const unnamed = !albumName;
+        const key = `${unnamed ? UNKNOWN_ALBUM_NAME : albumName}::${artist}`;
         if (!map.has(key)) {
-            map.set(key, { key, name: albumName, artist, tracks: [], coverTrackId: null, totalDuration: 0 });
+            map.set(key, {
+                key,
+                name: unnamed ? UNKNOWN_ALBUM_NAME : albumName,
+                artist,
+                artists: new Set(),
+                tracks: [],
+                coverTrackId: null,
+                totalDuration: 0,
+                unnamed,
+            });
         }
         const album = map.get(key);
         album.tracks.push(track);
+        artistNames.forEach(name => album.artists.add(name));
         album.totalDuration += track.duration || 0;
         if (!album.coverTrackId && track.hasCover) album.coverTrackId = track.id;
     });
     map.forEach(album => {
         album.tracks.sort((a, b) => a.title.localeCompare(b.title, "ru", { sensitivity: "base" }));
+        // У альбома без тега названием становится первый трек — тот же,
+        // который первым показывается в списке треков альбома.
+        // Скобки убираем и здесь: название альбома не должно их содержать,
+        // даже если они были в названии трека. Если от названия остались
+        // только скобки, оставляем их содержимое без самих скобок.
+        if (album.unnamed && album.tracks.length) {
+            let title = cleanAlbumName(album.tracks[0].title);
+            if (!title) title = unwrapBrackets(album.tracks[0].title);
+            if (!title) {
+                for (const track of album.tracks.slice(1)) {
+                    title = cleanAlbumName(track.title);
+                    if (title) break;
+                }
+            }
+            album.name = title || UNKNOWN_ALBUM_NAME;
+        }
     });
     state.albums = [...map.values()].sort((a, b) => {
         const aUnknown = isUnknownAlbum(a);
@@ -709,16 +799,36 @@ function buildAlbums() {
 function buildArtists() {
     const map = new Map();
     state.tracks.forEach(track => {
-        const name = (track.artist || "").trim() || "Неизвестный исполнитель";
-        if (!map.has(name)) {
-            map.set(name, { key: name, name, tracks: [], totalDuration: 0, albums: new Set(), avatarTrackId: null });
+        const names = splitArtistNames(track.artist);
+        if (!names.length) names.push(UNKNOWN_ARTIST_NAME);
+        for (const name of names) {
+            if (!map.has(name)) {
+                map.set(name, {
+                    key: name,
+                    name,
+                    tracks: [],
+                    totalDuration: 0,
+                    albums: new Set(),
+                    avatarTrackId: null,
+                });
+            }
+            const artist = map.get(name);
+            artist.tracks.push(track);
+            artist.totalDuration += track.duration || 0;
         }
-        const artist = map.get(name);
-        artist.tracks.push(track);
-        artist.totalDuration += track.duration || 0;
-        if (track.album) artist.albums.add(track.album);
     });
+
+    // Считаем альбомы по всем исполнителям трека, включая feat.
+    const albumsByArtist = new Map();
+    state.albums.forEach(album => {
+        album.artists.forEach(name => {
+            if (!albumsByArtist.has(name)) albumsByArtist.set(name, new Set());
+            albumsByArtist.get(name).add(album.key);
+        });
+    });
+
     map.forEach(a => {
+        a.albums = albumsByArtist.get(a.name) || new Set();
         a.tracks.sort((x, y) => x.title.localeCompare(y.title, "ru", { sensitivity: "base" }));
         const byDate = [...a.tracks].sort((x, y) => {
             const dx = x.date || "", dy = y.date || "";
@@ -780,7 +890,11 @@ function applyFilters() {
     let albumList = state.albums;
     if (state.search) {
         const q = state.search.toLowerCase();
-        albumList = albumList.filter(a => a.name.toLowerCase().includes(q) || a.artist.toLowerCase().includes(q));
+        albumList = albumList.filter(a =>
+            a.name.toLowerCase().includes(q) ||
+            a.artist.toLowerCase().includes(q) ||
+            [...a.artists].some(name => name.toLowerCase().includes(q))
+        );
     }
     state.filteredAlbums = albumList;
 
@@ -1131,7 +1245,7 @@ function renderArtistAlbums(artist) {
     const section = $("#artist-albums-section");
     const scroll = $("#artist-albums-scroll");
 
-    const artistAlbums = state.albums.filter(a => a.artist === artist.name);
+    const artistAlbums = state.albums.filter(a => a.artists && a.artists.has(artist.name));
     if (!artistAlbums.length) { section.classList.add("hidden"); return; }
     section.classList.remove("hidden");
 
