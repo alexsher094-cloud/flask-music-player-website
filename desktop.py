@@ -62,6 +62,7 @@ WM_GETMINMAXINFO = 0x0024
 WM_ACTIVATE      = 0x0006
 WM_NCCALCSIZE    = 0x0083
 WM_NCACTIVATE    = 0x0086
+WM_WINDOWPOSCHANGING = 0x0046
 WM_NCLBUTTONDOWN = 0x00A1
 WM_SYSCOMMAND    = 0x0112
 WM_HOTKEY        = 0x0312
@@ -172,6 +173,13 @@ class MINMAXINFO(ctypes.Structure):
     _fields_ = [("ptReserved", wintypes.POINT), ("ptMaxSize", wintypes.POINT),
                 ("ptMaxPosition", wintypes.POINT), ("ptMinTrackSize", wintypes.POINT),
                 ("ptMaxTrackSize", wintypes.POINT)]
+
+
+class WINDOWPOS(ctypes.Structure):
+    _fields_ = [("hwnd", wintypes.HWND), ("hwndInsertAfter", wintypes.HWND),
+                ("x", ctypes.c_int), ("y", ctypes.c_int),
+                ("cx", ctypes.c_int), ("cy", ctypes.c_int),
+                ("flags", wintypes.UINT)]
 
 
 class WINDOWPLACEMENT(ctypes.Structure):
@@ -415,6 +423,19 @@ class WindowApi:
                 if self._integration:
                     self._integration.handle_command(int(wparam), int(lparam))
 
+            if msg == WM_WINDOWPOSCHANGING and self._integration and lparam:
+                limits = self._integration.mini_limits()
+                if limits:
+                    wp = ctypes.cast(lparam, ctypes.POINTER(WINDOWPOS)).contents
+                    # В мини-режиме высота фиксирована. Snap к краю экрана всегда
+                    # меняет её (half/quarter/maximize), поэтому отменяем изменение.
+                    if not (wp.flags & SWP_NOSIZE) and wp.cy != limits[1]:
+                        wp.flags |= SWP_NOSIZE | SWP_NOMOVE
+
+            if msg == WM_SYSCOMMAND and self._integration and self._integration.is_mini():
+                if (int(wparam) & 0xFFF0) == SC_MAXIMIZE:
+                    return 0
+
             if msg == WM_GETMINMAXINFO:
                 # Минимальный размер окна задаёт pywebview (WINDOW_MIN = 460x500) — для
                 # мини-режима (460x140) его нужно переопределить, иначе окно не уменьшится.
@@ -469,7 +490,8 @@ class WindowApi:
         else:
             rect = ctypes.cast(lparam, ctypes.POINTER(wintypes.RECT)).contents
 
-        if user32.IsZoomed(hwnd) and not user32.IsIconic(hwnd):
+        in_mini = bool(self._integration and self._integration.is_mini())
+        if not in_mini and user32.IsZoomed(hwnd) and not user32.IsIconic(hwnd):
             area = _maximized_client_rect(hwnd)
             if area:
                 rect.left, rect.top, rect.right, rect.bottom = area
