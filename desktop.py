@@ -63,6 +63,7 @@ WM_ACTIVATE      = 0x0006
 WM_NCCALCSIZE    = 0x0083
 WM_NCACTIVATE    = 0x0086
 WM_WINDOWPOSCHANGING = 0x0046
+WM_EXITSIZEMOVE  = 0x0232
 WM_NCLBUTTONDOWN = 0x00A1
 WM_SYSCOMMAND    = 0x0112
 WM_HOTKEY        = 0x0312
@@ -284,6 +285,7 @@ class WindowApi:
         self._maximized = False
         self._active = True
         self._last_click = (0.0, (0, 0))
+        self._mini_drag = False
 
         self._close_cb = None
         self._on_installed = None
@@ -403,6 +405,9 @@ class WindowApi:
             return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
         try:
+            if msg == WM_EXITSIZEMOVE:
+                self._mini_drag = False
+
             if msg == WM_NCCALCSIZE:
                 self._on_nccalcsize(hwnd, wparam, lparam)
                 return 0
@@ -423,7 +428,7 @@ class WindowApi:
                 if self._integration:
                     self._integration.handle_command(int(wparam), int(lparam))
 
-            if msg == WM_WINDOWPOSCHANGING and self._integration and lparam:
+            if msg == WM_WINDOWPOSCHANGING and self._mini_drag and self._integration and lparam:
                 limits = self._integration.mini_limits()
                 if limits:
                     wp = ctypes.cast(lparam, ctypes.POINTER(WINDOWPOS)).contents
@@ -571,6 +576,9 @@ class WindowApi:
 
     def start_drag(self):
         if self._hwnd:
+            # Ограничиваем WINDOWPOS только на время перетаскивания мини-окна,
+            # иначе фильтр блокирует и штатное сворачивание.
+            self._mini_drag = bool(self._integration and self._integration.is_mini())
             user32.PostMessageW(self._hwnd, WM_APP_NCACTION, HTCAPTION, 0)
 
     def start_resize(self, edge: int):
@@ -671,12 +679,14 @@ class WindowApi:
 
     def toggle_mini_mode(self) -> bool:
         if self._integration:
+            self._mini_drag = False
             self._integration.toggle_mini_mode()
             return True
         return False
 
     def set_mini_mode(self, enabled: bool) -> bool:
         if self._integration:
+            self._mini_drag = False
             self._integration.set_mini_mode(bool(enabled))
             return True
         return False
