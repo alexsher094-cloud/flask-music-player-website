@@ -158,7 +158,14 @@ input { font-family: inherit; }
     overflow-y: auto;
     padding: 24px 28px 32px;
     min-height: 0;
+    /* Списки виртуализированы: строки добавляются/удаляются при скролле,
+       и браузерная «якорная» коррекция только сбивала бы позицию. */
+    overflow-anchor: none;
 }
+
+/* Мягкое появление экрана при переключении вкладки (только opacity — идёт на GPU) */
+.view:not(.hidden) { animation: view-in 0.14s ease-out; }
+@keyframes view-in { from { opacity: 0; } to { opacity: 1; } }
 
 .main::-webkit-scrollbar { width: 10px; }
 .main::-webkit-scrollbar-track { background: transparent; }
@@ -327,12 +334,13 @@ input { font-family: inherit; }
     cursor: pointer;
     transition: background 0.12s var(--ease);
     position: relative;
-    animation: row-in 0.35s var(--ease) both;
-}
-
-@keyframes row-in {
-    from { opacity: 0; transform: translateY(6px); }
-    to   { opacity: 1; transform: translateY(0); }
+    /* Высота строки фиксирована: виртуальный список считает позицию по единому шагу.
+       Раньше высота зависела от шрифта (CJK/эмодзи/подмена шрифта давали +1–2px),
+       из-за чего общая высота страницы «плавала» во время перетаскивания ползунка. */
+    box-sizing: border-box;
+    height: 56px;
+    /* Анимацию появления убрали: строки создаются прямо во время скролла,
+       и у каждой она запускалась заново — выглядело как мерцание. */
 }
 
 .track-row:hover { background: var(--bg-hover); }
@@ -374,6 +382,7 @@ input { font-family: inherit; }
 .row-cover svg { width: 18px; height: 18px; }
 
 .row-title-block {
+    overflow: hidden;
     display: flex;
     flex-direction: column;
     gap: 2px;
@@ -381,6 +390,7 @@ input { font-family: inherit; }
 }
 
 .row-title {
+    line-height: 1.3;
     font-size: 14px;
     font-weight: 500;
     color: var(--text);
@@ -403,6 +413,7 @@ input { font-family: inherit; }
 }
 
 .row-artist {
+    line-height: 1.3;
     font-size: 12.5px;
     color: var(--text-3);
     overflow: hidden;
@@ -411,6 +422,7 @@ input { font-family: inherit; }
 }
 
 .row-album {
+    line-height: 1.3;
     font-size: 13px;
     color: var(--text-3);
     overflow: hidden;
@@ -471,14 +483,8 @@ input { font-family: inherit; }
     border-radius: 12px;
     padding: 14px;
     cursor: pointer;
-    transition: all 0.2s var(--ease);
+    transition: background 0.2s var(--ease), transform 0.2s var(--ease), box-shadow 0.2s var(--ease);
     position: relative;
-    animation: album-in 0.4s var(--ease) both;
-}
-
-@keyframes album-in {
-    from { opacity: 0; transform: translateY(10px); }
-    to   { opacity: 1; transform: translateY(0); }
 }
 
 .album-card:hover {
@@ -546,6 +552,7 @@ input { font-family: inherit; }
 }
 
 .album-name {
+    line-height: 1.3;
     font-size: 14px;
     font-weight: 600;
     color: var(--text);
@@ -556,6 +563,7 @@ input { font-family: inherit; }
 }
 
 .album-artist {
+    line-height: 1.3;
     font-size: 12.5px;
     color: var(--text-3);
     overflow: hidden;
@@ -564,6 +572,7 @@ input { font-family: inherit; }
 }
 
 .album-count {
+    line-height: 1.3;
     font-size: 11.5px;
     color: var(--text-3);
     margin-top: 2px;
@@ -585,12 +594,11 @@ input { font-family: inherit; }
     border-radius: 12px;
     padding: 20px 16px 16px;
     cursor: pointer;
-    transition: all 0.2s var(--ease);
+    transition: background 0.2s var(--ease), transform 0.2s var(--ease), box-shadow 0.2s var(--ease);
     display: flex;
     flex-direction: column;
     align-items: center;
     text-align: center;
-    animation: album-in 0.4s var(--ease) both;
 }
 
 .artist-card:hover {
@@ -630,6 +638,7 @@ input { font-family: inherit; }
 }
 
 .artist-name {
+    line-height: 1.3;
     font-size: 14.5px;
     font-weight: 600;
     color: var(--text);
@@ -641,6 +650,7 @@ input { font-family: inherit; }
 }
 
 .artist-count {
+    line-height: 1.3;
     font-size: 12px;
     color: var(--text-3);
     margin-top: 3px;

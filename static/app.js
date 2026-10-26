@@ -17,6 +17,7 @@ const state = {
     currentArtistKey: null,
     albumBackTarget: "albums",
     albumBackArtistKey: null,
+    backStack: [],            // откуда открыли альбом/артиста: {search, artistKey}
     currentTrackId: null,
     currentTrack: null,
     switchingTrack: false,
@@ -523,11 +524,18 @@ function formatTime(seconds) {
     return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+// Раньше на каждый вызов создавался DOM-элемент — при отрисовке списка это
+// десятки тысяч лишних createElement. Обычная замена по regexp быстрее на порядок.
+const ESC_MAP = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = str;
-    return div.innerHTML;
+    return String(str ?? "").replace(/[&<>"']/g, (c) => ESC_MAP[c]);
 }
+
+// localeCompare(a, b, "ru", opts) на каждое сравнение пересоздаёт коллатор внутри —
+// при сортировке 1200 треков это сотни миллисекунд. Один общий Intl.Collator
+// даёт тот же порядок в разы быстрее.
+const collator = new Intl.Collator("ru", { sensitivity: "base" });
+const cmp = (a, b) => collator.compare(a, b);
 
 function highlight(text, query) {
     const safe = escapeHtml(text);
@@ -660,8 +668,9 @@ function toggleFavorite(trackId) {
     saveFavorites();
     updateFavCount();
 
-    const row = document.querySelector(`.track-row[data-track-id="${trackId}"]`);
-    if (row) {
+    // Строка может быть сразу в нескольких списках (все треки + альбом) — обновляем все
+    // (в DOM лишь отрисованные сейчас строки: остальные получат состояние при создании).
+    document.querySelectorAll(`.track-row[data-track-id="${CSS.escape(trackId)}"]`).forEach(row => {
         const btn = row.querySelector(".fav-btn");
         if (btn) {
             const active = isFavorite(trackId);
@@ -671,7 +680,7 @@ function toggleFavorite(trackId) {
                 setTimeout(() => btn.classList.remove("pop"), 400);
             }
         }
-    }
+    });
 
     if (state.currentTrackId === trackId) {
         updatePlayerFavBtn();
@@ -766,7 +775,7 @@ function buildAlbums() {
         if (!album.coverTrackId && track.hasCover) album.coverTrackId = track.id;
     });
     map.forEach(album => {
-        album.tracks.sort((a, b) => a.title.localeCompare(b.title, "ru", { sensitivity: "base" }));
+        album.tracks.sort((a, b) => cmp(a.title, b.title));
         // У альбома без тега названием становится первый трек — тот же,
         // который первым показывается в списке треков альбома.
         // Скобки убираем и здесь: название альбома не должно их содержать,
@@ -784,12 +793,16 @@ function buildAlbums() {
             album.name = title || UNKNOWN_ALBUM_NAME;
         }
     });
+    map.forEach(album => {
+        // Строки для поиска — один раз при сборке, а не на каждое нажатие клавиши.
+        album._q = [album.name, album.artist, ...album.artists].map(x => String(x).toLowerCase());
+    });
     state.albums = [...map.values()].sort((a, b) => {
         const aUnknown = isUnknownAlbum(a);
         const bUnknown = isUnknownAlbum(b);
         if (aUnknown && !bUnknown) return 1;
         if (!aUnknown && bUnknown) return -1;
-        return a.name.localeCompare(b.name, "ru", { sensitivity: "base" });
+        return cmp(a.name, b.name);
     });
 }
 
@@ -829,30 +842,52 @@ function buildArtists() {
 
     map.forEach(a => {
         a.albums = albumsByArtist.get(a.name) || new Set();
-        a.tracks.sort((x, y) => x.title.localeCompare(y.title, "ru", { sensitivity: "base" }));
+        a.tracks.sort((x, y) => cmp(x.title, y.title));
         const byDate = [...a.tracks].sort((x, y) => {
             const dx = x.date || "", dy = y.date || "";
-            if (dx !== dy) return dy.localeCompare(dx);
+            if (dx !== dy) return dx < dy ? 1 : -1;
             return (y.mtime || 0) - (x.mtime || 0);
         });
         const withCover = byDate.find(t => t.hasCover);
         a.avatarTrackId = withCover ? withCover.id : null;
     });
-    state.artists = [...map.values()].sort((a, b) => a.name.localeCompare(b.name, "ru", { sensitivity: "base" }));
+    state.artists = [...map.values()].sort((a, b) => cmp(a.name, b.name));
 }
 
 /* ============================================================
    ФИЛЬТРАЦИЯ
    ============================================================ */
+// Строки для поиска в нижнем регистре считаем один раз на трек,
+// а не на каждое нажатие клавиши (раньше это были тысячи toLowerCase за ввод).
+function trackQ(t) {
+    if (!t._q) {
+        Object.defineProperty(t, "_q", {   // не enumerable — не попадёт в JSON/IPC
+            value: {
+                t: String(t.title || "").toLowerCase(),
+                a: String(t.artist || "").toLowerCase(),
+                b: String(t.album || "").toLowerCase(),
+            },
+        });
+    }
+    return t._q;
+}
+
 function applyFilters() {
+    // Открытый альбом/артист мог исчезнуть из библиотеки (пересканирование) —
+    // тогда возвращаемся к корню вкладки, а не оставляем пустой экран.
+    let artist = null, album = null;
     if (state.currentArtistKey) {
-        const artist = state.artists.find(a => a.key === state.currentArtistKey);
-        if (!artist) { state.currentArtistKey = null; return; }
+        artist = state.artists.find(a => a.key === state.currentArtistKey) || null;
+        if (!artist) state.currentArtistKey = null;
+    } else if (state.currentAlbumKey) {
+        album = state.albums.find(a => a.key === state.currentAlbumKey) || null;
+        if (!album) state.currentAlbumKey = null;
+    }
+    const q = state.search.toLowerCase();
+
+    if (artist) {
         let list = artist.tracks;
-        if (state.search) {
-            const q = state.search.toLowerCase();
-            list = list.filter(t => t.title.toLowerCase().includes(q) || (t.album || "").toLowerCase().includes(q));
-        }
+        if (q) list = list.filter(t => { const c = trackQ(t); return c.t.includes(q) || c.b.includes(q); });
         state.filteredTracks = list;
         renderCurrentView();
         renderArtistDetail(artist);
@@ -860,14 +895,9 @@ function applyFilters() {
         return;
     }
 
-    if (state.currentAlbumKey) {
-        const album = state.albums.find(a => a.key === state.currentAlbumKey);
-        if (!album) { state.currentAlbumKey = null; return; }
+    if (album) {
         let list = album.tracks;
-        if (state.search) {
-            const q = state.search.toLowerCase();
-            list = list.filter(t => t.title.toLowerCase().includes(q) || t.artist.toLowerCase().includes(q));
-        }
+        if (q) list = list.filter(t => { const c = trackQ(t); return c.t.includes(q) || c.a.includes(q); });
         state.filteredTracks = list;
         renderCurrentView();
         renderAlbumDetail(album);
@@ -877,32 +907,20 @@ function applyFilters() {
 
     let trackList = state.tracks;
     if (state.view === "favorites") trackList = trackList.filter(t => isFavorite(t.id));
-    if (state.search) {
-        const q = state.search.toLowerCase();
-        trackList = trackList.filter(t =>
-            t.title.toLowerCase().includes(q) ||
-            t.artist.toLowerCase().includes(q) ||
-            (t.album || "").toLowerCase().includes(q)
-        );
+    if (q) {
+        trackList = trackList.filter(t => {
+            const c = trackQ(t);
+            return c.t.includes(q) || c.a.includes(q) || c.b.includes(q);
+        });
     }
     state.filteredTracks = trackList;
 
     let albumList = state.albums;
-    if (state.search) {
-        const q = state.search.toLowerCase();
-        albumList = albumList.filter(a =>
-            a.name.toLowerCase().includes(q) ||
-            a.artist.toLowerCase().includes(q) ||
-            [...a.artists].some(name => name.toLowerCase().includes(q))
-        );
-    }
+    if (q) albumList = albumList.filter(a => a._q.some(s => s.includes(q)));
     state.filteredAlbums = albumList;
 
     let artistList = state.artists;
-    if (state.search) {
-        const q = state.search.toLowerCase();
-        artistList = artistList.filter(a => a.name.toLowerCase().includes(q));
-    }
+    if (q) artistList = artistList.filter(a => a.name.toLowerCase().includes(q));
     state.filteredArtists = artistList;
 
     renderCurrentView();
@@ -910,42 +928,332 @@ function applyFilters() {
 }
 
 /* ============================================================
+   ВИРТУАЛЬНЫЙ СПИСОК
+   Держит в DOM только то, что видно на экране (+ небольшой запас),
+   остальное заменяет отступами сверху/снизу. Благодаря этому
+   переключение вкладок, поиск и скролл не зависят от размера
+   библиотеки: 1200 или 20000 треков — в DOM всё равно ~30 строк.
+
+   Раскладку (колонки сетки, ширины, hover) по-прежнему делает
+   обычный CSS: строки — просто дочерние элементы хоста.
+   ============================================================ */
+const mainEl = document.querySelector(".main");
+const vlists = [];
+
+class VList {
+    constructor(host, { view, html, onClick, emptyHtml = "" }) {
+        this.host = host;
+        this.view = view;           // элемент вида: если скрыт — не обновляем
+        this.html = html;           // (item, index) => строка HTML одной карточки
+        this.onClick = onClick;     // (event, item, index, items) => void
+        this.emptyHtml = emptyHtml;
+        this.items = [];
+        this.sig = "";
+        this.first = 0;             // отрисованный диапазон элементов [first, last)
+        this.last = 0;
+        this.cols = 1;
+        this.pitch = 0;             // шаг строки в px (высота + gap)
+        this.rowH = 0;
+        this.w = 0;                 // ширина хоста на момент замера
+        this.padTop0 = 0;           // «родные» паддинги хоста из CSS
+        this.padBottom0 = 0;
+
+        host.addEventListener("click", (e) => {
+            const el = e.target.closest("[data-i]");
+            if (!el || !host.contains(el)) return;
+            const i = +el.dataset.i;
+            if (this.items[i]) this.onClick(e, this.items[i], i, this.items);
+        });
+        vlists.push(this);
+    }
+
+    get visible() { return !this.view.classList.contains("hidden"); }
+
+    // sig — всё, от чего зависит HTML карточки помимо самих элементов (поисковый запрос).
+    setItems(items, sig = "") {
+        if (items === this.items && sig === this.sig && items.length) {
+            this.update();
+            return;
+        }
+        this.items = items;
+        this.sig = sig;
+        const host = this.host;
+        host.textContent = "";
+        this.first = this.last = 0;
+        if (!items.length) {
+            host.style.paddingTop = host.style.paddingBottom = "";
+            host.innerHTML = this.emptyHtml;
+        } else if (this.pitch) {
+            this._pad();            // общая высота известна сразу — скролл не «схлопывается»
+        }
+        if (this.visible) this.update();
+    }
+
+    update() {
+        if (!this.visible || !this.items.length) return;
+        if (!this.pitch || this.host.clientWidth !== this.w) { this.relayout(); return; }
+        // Перемер здесь больше не запускаем «по подозрению»: он схлопывал страницу
+        // и обрывал перетаскивание ползунка мышью. Раскладка пересчитывается только
+        // при смене ширины, загрузке шрифтов и новом списке.
+        this._showRange();
+    }
+
+    relayout() {
+        if (!this.visible || !this.items.length) return;
+        // Якорь: какой по счёту элемент сейчас у верхнего края окна.
+        // Если верх списка ещё виден (vt <= 0) — позицию не трогаем, иначе страницу
+        // «подкинет» вниз мимо заголовка.
+        const vt = this.pitch ? this._viewTop() : 0;
+        const anchor = vt > 0 ? vt / this.pitch * this.cols : null;
+        this._measure();
+        if (anchor !== null) {
+            mainEl.scrollTop = this._contentTop() + anchor / this.cols * this.pitch;
+        }
+        this._showRange();
+    }
+
+    _contentTop() {
+        return this.host.getBoundingClientRect().top - mainEl.getBoundingClientRect().top
+             + mainEl.scrollTop + this.padTop0;
+    }
+
+    _viewTop() { return mainEl.scrollTop - this._contentTop(); }
+
+    _measure() {
+        const host = this.host;
+        const keepScroll = mainEl.scrollTop;
+        const n = this.items.length;
+        // Пока меряем, держим прежнюю высоту списка: иначе страница на миг становится
+        // короткой, полоса прокрутки исчезает (а с ней — и захват ползунка мышью).
+        const prevH = host.offsetHeight;
+        if (prevH) host.style.minHeight = prevH + "px";
+
+        host.style.paddingTop = host.style.paddingBottom = "";
+        const cs = getComputedStyle(host);
+        this.padTop0 = parseFloat(cs.paddingTop) || 0;
+        this.padBottom0 = parseFloat(cs.paddingBottom) || 0;
+        const gap = parseFloat(cs.rowGap) || 0;
+        const isGrid = cs.display === "grid";
+
+        // Два прохода: после первого ставим общую высоту, появляется полоса
+        // прокрутки, ширина карточек чуть меняется — второй проход меряет уже по ней.
+        for (let pass = 0; pass < 2; pass++) {
+            const probeCount = Math.min(n, isGrid ? 48 : 1);
+            let html = "";
+            for (let i = 0; i < probeCount; i++) html += this.html(this.items[i], i);
+            host.innerHTML = html;
+            const kids = host.children;
+            this.rowH = kids[0].getBoundingClientRect().height;
+            this.pitch = this.rowH + gap;
+            // колонок столько, сколько карточек стоит на одной линии с первой
+            let cols = 1;
+            if (isGrid) {
+                const top0 = kids[0].offsetTop;
+                while (cols < kids.length && kids[cols].offsetTop === top0) cols++;
+            }
+            this.cols = cols;
+            this.first = 0;
+            this.last = probeCount;
+            this._pad();
+        }
+        this.w = host.clientWidth;
+        host.textContent = "";
+        this.first = this.last = 0;
+        this._pad();
+        host.style.minHeight = "";
+        mainEl.scrollTop = keepScroll;
+    }
+
+    _pad() {
+        const rows = Math.ceil(this.items.length / this.cols);
+        const before = Math.floor(this.first / this.cols);
+        const after = rows - Math.ceil(this.last / this.cols);
+        this.host.style.paddingTop = (this.padTop0 + before * this.pitch) + "px";
+        this.host.style.paddingBottom = (this.padBottom0 + after * this.pitch) + "px";
+    }
+
+    _showRange() {
+        const n = this.items.length, cols = this.cols, pitch = this.pitch;
+        const rows = Math.ceil(n / cols);
+        const vt = this._viewTop();
+        const buf = Math.max(1, Math.ceil(450 / pitch));    // запас ~450px сверху и снизу
+        let r0 = Math.floor(vt / pitch) - buf;
+        let r1 = Math.ceil((vt + mainEl.clientHeight) / pitch) + buf;
+        r0 = Math.max(0, Math.min(r0, rows - 1));
+        r1 = Math.max(r0 + 1, Math.min(r1, rows));
+        const a = r0 * cols, b = Math.min(n, r1 * cols);
+        if (a === this.first && b === this.last && this.host.firstElementChild) return;
+
+        const host = this.host;
+        if (b <= this.first || a >= this.last || this.first === this.last) {
+            host.textContent = "";
+            host.appendChild(this._frag(a, b));
+        } else {
+            while (this.last > b) { host.lastElementChild.remove(); this.last--; }
+            while (this.first < a) { host.firstElementChild.remove(); this.first++; }
+            if (a < this.first) host.insertBefore(this._frag(a, this.first), host.firstChild);
+            if (b > this.last) host.appendChild(this._frag(this.last, b));
+        }
+        this.first = a;
+        this.last = b;
+        this._pad();
+    }
+
+    _frag(a, b) {
+        let html = "";
+        for (let i = a; i < b; i++) html += this.html(this.items[i], i);
+        const t = document.createElement("template");
+        t.innerHTML = html;
+        return t.content;
+    }
+}
+
+function updateVLists() {
+    for (const l of vlists) l.update();
+}
+
+let _vlRaf = 0;
+function scheduleVLists() {
+    if (_vlRaf) return;
+    _vlRaf = requestAnimationFrame(() => { _vlRaf = 0; updateVLists(); });
+}
+mainEl.addEventListener("scroll", scheduleVLists, { passive: true });
+window.addEventListener("resize", scheduleVLists);
+if (document.fonts) {
+    // Шрифт мог догрузиться уже после первого замера — высоты карточек меняются.
+    document.fonts.ready.then(() => vlists.forEach(l => l.relayout()));
+}
+
+/* ============================================================
+   ПАМЯТЬ ПОЗИЦИЙ И НАВИГАЦИЯ
+   ============================================================ */
+// Позиция скролла (и поиск, при котором она снята) для каждого экрана:
+// вкладки "all"/"albums"/..., а также "album:<key>" и "artist:<key>".
+const viewMem = new Map();
+// Что было открыто внутри вкладки (альбом/артист), чтобы вернуться туда же.
+const tabCtx = new Map();
+
+function scrollKey() {
+    if (state.currentAlbumKey) return "album:" + state.currentAlbumKey;
+    if (state.currentArtistKey) return "artist:" + state.currentArtistKey;
+    return state.view;
+}
+
+function rememberScroll() {
+    const entry = { top: mainEl.scrollTop, search: state.search, left: 0 };
+    if (state.currentArtistKey) {
+        const sc = $("#artist-albums-scroll");
+        if (sc) entry.left = sc.scrollLeft;
+    }
+    viewMem.set(scrollKey(), entry);
+}
+
+function setScrollLeft(el, left) {
+    // у .artist-albums-scroll в CSS стоит smooth — для восстановления нужен мгновенный
+    el.scrollTo({ left, behavior: "instant" });
+}
+
+function restoreScroll() {
+    const entry = viewMem.get(scrollKey());
+    const fresh = !entry || entry.search !== state.search;   // результаты другие — позиция неактуальна
+    mainEl.scrollTop = fresh ? 0 : entry.top;
+    if (state.currentArtistKey) {
+        const sc = $("#artist-albums-scroll");
+        if (sc) setScrollLeft(sc, fresh ? 0 : entry.left);
+    }
+    updateVLists();   // сразу, без кадра с пустым местом
+}
+
+function setNavActive(view) {
+    $$("[data-view]").forEach(b => b.classList.toggle("active", b.dataset.view === view));
+}
+
+function setSearchValue(value) {
+    clearTimeout(searchTimeout);   // не даём отложенному вводу перебить установленное значение
+    state.search = value;
+    const input = $("#search-input");
+    if (input) input.value = value;
+    $("#search-clear").classList.toggle("hidden", !value);
+}
+
+function saveTabCtx() {
+    tabCtx.set(state.view, {
+        albumKey: state.currentAlbumKey,
+        artistKey: state.currentArtistKey,
+        backTarget: state.albumBackTarget,
+        backArtistKey: state.albumBackArtistKey,
+        stack: state.backStack,
+    });
+}
+
+function resetDetail() {
+    state.currentAlbumKey = null;
+    state.currentArtistKey = null;
+    state.albumBackTarget = "albums";
+    state.albumBackArtistKey = null;
+    state.backStack = [];
+}
+
+function switchView(view) {
+    if (view === state.view) {
+        // Повторный клик по активной вкладке из карточки альбома/артиста —
+        // возвращаемся к списку вкладки, как по кнопке «Назад».
+        if (state.currentAlbumKey || state.currentArtistKey) {
+            const root = state.backStack[0];
+            resetDetail();
+            setSearchValue(root ? root.search : "");
+            tabCtx.delete(view);
+            applyFilters();
+            restoreScroll();
+        }
+        return;
+    }
+    rememberScroll();
+    saveTabCtx();
+
+    state.view = view;
+    resetDetail();
+    // Вкладка помнит, где пользователь остановился (в том числе открытый альбом/артист).
+    // При активном поиске показываем список: детали были бы отфильтрованы чужим запросом.
+    const ctx = tabCtx.get(view);
+    if (ctx && !state.search) {
+        state.currentAlbumKey = ctx.albumKey;
+        state.currentArtistKey = ctx.artistKey;
+        state.albumBackTarget = ctx.backTarget;
+        state.albumBackArtistKey = ctx.backArtistKey;
+        state.backStack = ctx.stack;
+    }
+    setNavActive(view);
+    applyFilters();
+    restoreScroll();
+}
+
+/* ============================================================
    ПЕРЕКЛЮЧЕНИЕ VIEW
    ============================================================ */
-function renderCurrentView() {
-    const views = [
-        "#view-tracks", "#view-albums", "#view-artists",
-        "#view-album-detail", "#view-artist-detail", "#view-settings", "#empty-state"
-    ];
-    views.forEach(v => $(v).classList.add("hidden"));
+const VIEW_SELECTORS = [
+    "#view-tracks", "#view-albums", "#view-artists",
+    "#view-album-detail", "#view-artist-detail", "#view-settings", "#empty-state",
+];
 
-    if (state.view === "settings" && !state.currentAlbumKey && !state.currentArtistKey) {
-        $("#view-settings").classList.remove("hidden");
-        return;
-    }
-    if (state.currentAlbumKey) {
-        $("#view-album-detail").classList.remove("hidden");
-        return;
-    }
-    if (state.currentArtistKey) {
-        $("#view-artist-detail").classList.remove("hidden");
-        return;
-    }
-    if (state.view === "albums") {
-        if (!state.filteredAlbums.length) { showEmptyState(); return; }
-        $("#view-albums").classList.remove("hidden");
-        renderAlbums();
-        return;
-    }
-    if (state.view === "artists") {
-        if (!state.filteredArtists.length) { showEmptyState(); return; }
-        $("#view-artists").classList.remove("hidden");
-        renderArtists();
-        return;
-    }
-    if (!state.filteredTracks.length) { showEmptyState(); return; }
-    $("#view-tracks").classList.remove("hidden");
-    renderTracks();
+function currentViewSelector() {
+    if (state.view === "settings" && !state.currentAlbumKey && !state.currentArtistKey) return "#view-settings";
+    if (state.currentAlbumKey) return "#view-album-detail";
+    if (state.currentArtistKey) return "#view-artist-detail";
+    if (state.view === "albums") return state.filteredAlbums.length ? "#view-albums" : "#empty-state";
+    if (state.view === "artists") return state.filteredArtists.length ? "#view-artists" : "#empty-state";
+    return state.filteredTracks.length ? "#view-tracks" : "#empty-state";
+}
+
+function renderCurrentView() {
+    const target = currentViewSelector();
+    // toggle с флагом ничего не трогает, если класс уже верный — вид не мигает при поиске
+    for (const v of VIEW_SELECTORS) $(v).classList.toggle("hidden", v !== target);
+
+    if (target === "#empty-state") showEmptyState();
+    else if (target === "#view-albums") albumsGrid.setItems(state.filteredAlbums, state.search);
+    else if (target === "#view-artists") artistsGrid.setItems(state.filteredArtists, state.search);
+    else if (target === "#view-tracks") tracksList.setItems(state.filteredTracks, state.search);
 }
 
 function showEmptyState() {
@@ -1022,134 +1330,131 @@ function updateArtistDetailHeader(artist) {
 }
 
 /* ============================================================
-   ОТРИСОВКА ТРЕКОВ
+   ОТРИСОВКА ТРЕКОВ / АЛЬБОМОВ / АРТИСТОВ
+   Только HTML-шаблоны: клики обрабатываются делегированием на хосте VList,
+   а не отдельным обработчиком на каждую из тысяч строк.
    ============================================================ */
-function renderTracks() {
-    const list = $("#track-list");
-    list.innerHTML = "";
-    renderTrackRows(list, state.filteredTracks);
+const NOTE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>';
+const PLAY_ICON = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+const HEART_ICON = '<svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>';
+const NOT_FOUND_HTML = '<div style="padding:20px;text-align:center;color:var(--text-3)">Ничего не найдено</div>';
+
+function trackRowHtml(track, i) {
+    const id = escapeHtml(track.id);
+    const playing = track.id === state.currentTrackId ? " playing" : "";
+    const fav = isFavorite(track.id) ? " active" : "";
+    const cover = track.hasCover
+        ? `<img src="${coverUrl(track.id, 128, track.cover)}" alt="" decoding="async">`
+        : NOTE_ICON;
+    return `<div class="track-row${playing}" data-i="${i}" data-track-id="${id}">` +
+        `<div class="row-num"><span class="row-num-text">${i + 1}</span><span class="row-play-icon">${PLAY_ICON}</span></div>` +
+        `<div class="row-cover">${cover}</div>` +
+        `<div class="row-title-block">` +
+            `<div class="row-title">${highlight(track.title, state.search)}</div>` +
+            `<div class="row-artist">${highlight(track.artist, state.search)}</div>` +
+        `</div>` +
+        `<div class="row-album">${highlight(track.album || "—", state.search)}</div>` +
+        `<div class="row-duration">${formatTime(track.duration)}</div>` +
+        `<button class="fav-btn${fav}" data-fav-id="${id}" title="В избранное">${HEART_ICON}</button>` +
+    `</div>`;
 }
 
-function renderTrackRows(container, tracks) {
-    tracks.forEach((track, i) => {
-        const row = document.createElement("div");
-        row.className = "track-row";
-        row.dataset.index = i;
-        row.dataset.trackId = track.id;
-        if (track.id === state.currentTrackId) row.classList.add("playing");
-
-        const coverHtml = track.hasCover
-            ? `<img src="${coverUrl(track.id, 128, track.cover)}" alt="" loading="lazy">`
-            : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>`;
-
-        const favActive = isFavorite(track.id) ? "active" : "";
-
-        row.innerHTML = `
-            <div class="row-num">
-                <span class="row-num-text">${i + 1}</span>
-                <span class="row-play-icon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></span>
-            </div>
-            <div class="row-cover">${coverHtml}</div>
-            <div class="row-title-block">
-                <div class="row-title">${highlight(track.title, state.search)}</div>
-                <div class="row-artist">${highlight(track.artist, state.search)}</div>
-            </div>
-            <div class="row-album">${highlight(track.album || "—", state.search)}</div>
-            <div class="row-duration">${formatTime(track.duration)}</div>
-            <button class="fav-btn ${favActive}" data-fav-id="${track.id}" title="В избранное">
-                <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
-                </svg>
-            </button>
-        `;
-
-        row.addEventListener("click", () => playTrackFromList(track, tracks));
-        row.querySelector(".fav-btn").addEventListener("click", (e) => {
-            e.stopPropagation();
-            toggleFavorite(track.id);
-        });
-
-        container.appendChild(row);
-    });
+function onTrackClick(e, track, i, items) {
+    if (e.target.closest(".fav-btn")) {
+        e.stopPropagation();
+        toggleFavorite(track.id);
+        return;
+    }
+    playTrackFromList(track, items);
 }
 
-function renderAlbums() {
-    const grid = $("#albums-grid");
-    grid.innerHTML = "";
-    state.filteredAlbums.forEach((album, i) => {
-        const card = document.createElement("div");
-        card.className = "album-card";
-        card.style.animationDelay = (i * 0.03) + "s";
-
-        const coverHtml = album.coverTrackId
-            ? `<img src="${coverUrl(album.coverTrackId, 256)}" alt="" loading="lazy">` : "";
-        const coverStyle = album.coverTrackId ? ""
-            : `style="background: ${purpleGradient(album.name + album.artist)}"`;
-
-        card.innerHTML = `
-            <div class="album-cover" ${coverStyle}>
-                ${coverHtml}
-                <button class="album-play-btn" title="Играть альбом">
-                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-                </button>
-            </div>
-            <div class="album-info">
-                <div class="album-name">${highlight(album.name, state.search)}</div>
-                <div class="album-artist">${highlight(album.artist, state.search)}</div>
-                <div class="album-count">${album.tracks.length} треков</div>
-            </div>
-        `;
-
-        card.addEventListener("click", () => openAlbum(album.key));
-        card.querySelector(".album-play-btn").addEventListener("click", (e) => {
-            e.stopPropagation();
-            if (album.tracks.length) playTrackFromList(album.tracks[0], album.tracks);
-        });
-        grid.appendChild(card);
-    });
+function albumCardHtml(album, i) {
+    const cover = album.coverTrackId
+        ? `<img src="${coverUrl(album.coverTrackId, 256)}" alt="" decoding="async">` : "";
+    const coverStyle = album.coverTrackId ? ""
+        : `style="background: ${purpleGradient(album.name + album.artist)}"`;
+    return `<div class="album-card" data-i="${i}">` +
+        `<div class="album-cover" ${coverStyle}>${cover}` +
+            `<button class="album-play-btn" title="Играть альбом">${PLAY_ICON}</button>` +
+        `</div>` +
+        `<div class="album-info">` +
+            `<div class="album-name">${highlight(album.name, state.search)}</div>` +
+            `<div class="album-artist">${highlight(album.artist, state.search)}</div>` +
+            `<div class="album-count">${album.tracks.length} треков</div>` +
+        `</div>` +
+    `</div>`;
 }
 
-function renderArtists() {
-    const grid = $("#artists-grid");
-    grid.innerHTML = "";
-    state.filteredArtists.forEach((artist, i) => {
-        const card = document.createElement("div");
-        card.className = "artist-card";
-        card.style.animationDelay = (i * 0.03) + "s";
-
-        const avatarHtml = artist.avatarTrackId
-            ? `<img src="${coverUrl(artist.avatarTrackId, 256)}" alt="" loading="lazy">`
-            : getInitials(artist.name);
-        const avatarStyle = artist.avatarTrackId ? "" : `background: ${artistGradient(artist.name)}`;
-
-        card.innerHTML = `
-            <div class="artist-avatar" style="${avatarStyle}">${avatarHtml}</div>
-            <div class="artist-name">${highlight(artist.name, state.search)}</div>
-            <div class="artist-count">${artist.tracks.length} треков</div>
-        `;
-
-        card.addEventListener("click", () => openArtist(artist.key));
-        grid.appendChild(card);
-    });
+function onAlbumClick(e, album) {
+    if (e.target.closest(".album-play-btn")) {
+        e.stopPropagation();
+        if (album.tracks.length) playTrackFromList(album.tracks[0], album.tracks);
+        return;
+    }
+    openAlbum(album.key);
 }
+
+function artistCardHtml(artist, i) {
+    const avatar = artist.avatarTrackId
+        ? `<img src="${coverUrl(artist.avatarTrackId, 256)}" alt="" decoding="async">`
+        : escapeHtml(getInitials(artist.name));
+    const avatarStyle = artist.avatarTrackId ? "" : `background: ${artistGradient(artist.name)}`;
+    return `<div class="artist-card" data-i="${i}">` +
+        `<div class="artist-avatar" style="${avatarStyle}">${avatar}</div>` +
+        `<div class="artist-name">${highlight(artist.name, state.search)}</div>` +
+        `<div class="artist-count">${artist.tracks.length} треков</div>` +
+    `</div>`;
+}
+
+function onArtistClick(e, artist) {
+    openArtist(artist.key);
+}
+
+const tracksList = new VList($("#track-list"), {
+    view: $("#view-tracks"), html: trackRowHtml, onClick: onTrackClick,
+});
+const albumTracksList = new VList($("#album-track-list"), {
+    view: $("#view-album-detail"), html: trackRowHtml, onClick: onTrackClick, emptyHtml: NOT_FOUND_HTML,
+});
+const artistTracksList = new VList($("#artist-track-list"), {
+    view: $("#view-artist-detail"), html: trackRowHtml, onClick: onTrackClick, emptyHtml: NOT_FOUND_HTML,
+});
+const albumsGrid = new VList($("#albums-grid"), {
+    view: $("#view-albums"), html: albumCardHtml, onClick: onAlbumClick,
+});
+const artistsGrid = new VList($("#artists-grid"), {
+    view: $("#view-artists"), html: artistCardHtml, onClick: onArtistClick,
+});
 
 /* ============================================================
    ДЕТАЛИ АЛЬБОМА
    ============================================================ */
 function openAlbum(key, fromArtist = false) {
+    rememberScroll();   // позиция списка, из которого уходим
+    state.backStack.push({
+        search: state.search,
+        artistKey: fromArtist ? state.currentArtistKey : null,
+    });
+    state.albumBackTarget = fromArtist ? "artists" : "albums";
+    state.albumBackArtistKey = fromArtist ? state.currentArtistKey : null;
     state.currentAlbumKey = key;
     state.currentArtistKey = null;
-    state.albumBackTarget = fromArtist ? "artists" : "albums";
-    state.search = "";
-    $("#search-input").value = "";
-    $("#search-clear").classList.add("hidden");
+    viewMem.delete("album:" + key);   // новый заход в альбом — с начала
+    setSearchValue("");
     applyFilters();
-    document.querySelector(".main").scrollTop = 0;
+    restoreScroll();
 }
 
 function closeAlbum() {
+    const frame = state.backStack.pop() || { search: "", artistKey: null };
     state.currentAlbumKey = null;
+    // Альбом открыли из карточки артиста — возвращаемся в карточку, а не в «Альбомы».
+    state.currentArtistKey = frame.artistKey || null;
+    state.albumBackTarget = "albums";
+    state.albumBackArtistKey = null;
+    setSearchValue(frame.search);
     applyFilters();
+    restoreScroll();
 }
 
 function renderAlbumDetail(album) {
@@ -1176,31 +1481,29 @@ function renderAlbumDetail(album) {
     playBtn.onclick = () => { if (album.tracks.length) playTrackFromList(album.tracks[0], album.tracks); };
     playBtn.disabled = album.tracks.length === 0;
 
-    const list = $("#album-track-list");
-    list.innerHTML = "";
-    if (!state.filteredTracks.length) {
-        list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-3)">Ничего не найдено</div>';
-        return;
-    }
-    renderTrackRows(list, state.filteredTracks);
+    albumTracksList.setItems(state.filteredTracks, state.search);
 }
 
 /* ============================================================
    ДЕТАЛИ АРТИСТА
    ============================================================ */
 function openArtist(key) {
+    rememberScroll();
+    state.backStack.push({ search: state.search, artistKey: null });
     state.currentArtistKey = key;
     state.currentAlbumKey = null;
-    state.search = "";
-    $("#search-input").value = "";
-    $("#search-clear").classList.add("hidden");
+    viewMem.delete("artist:" + key);
+    setSearchValue("");
     applyFilters();
-    document.querySelector(".main").scrollTop = 0;
+    restoreScroll();
 }
 
 function closeArtist() {
+    const frame = state.backStack.pop() || { search: "" };
     state.currentArtistKey = null;
+    setSearchValue(frame.search);
     applyFilters();
+    restoreScroll();
 }
 
 function renderArtistDetail(artist) {
@@ -1231,14 +1534,7 @@ function renderArtistDetail(artist) {
     playBtn.disabled = artist.tracks.length === 0;
 
     renderArtistAlbums(artist);
-
-    const list = $("#artist-track-list");
-    list.innerHTML = "";
-    if (!state.filteredTracks.length) {
-        list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-3)">Ничего не найдено</div>';
-        return;
-    }
-    renderTrackRows(list, state.filteredTracks);
+    artistTracksList.setItems(state.filteredTracks, state.search);
 }
 
 function renderArtistAlbums(artist) {
@@ -1257,55 +1553,45 @@ function renderArtistAlbums(artist) {
         return getAlbumYear(b) - getAlbumYear(a);
     });
 
-    scroll.innerHTML = "";
+    // Перерисовка (например, при вводе в поиск) не должна сбрасывать
+    // горизонтальную прокрутку ленты альбомов того же артиста.
+    const keepLeft = scroll.dataset.artist === artist.key ? scroll.scrollLeft : 0;
+    scroll.dataset.artist = artist.key;
 
-    artistAlbums.forEach(album => {
-        const card = document.createElement("div");
-        card.className = "artist-album-card";
-
+    scroll.innerHTML = artistAlbums.map(album => {
         const coverInner = album.coverTrackId
-            ? `<img src="${coverUrl(album.coverTrackId, 256)}" alt="" loading="lazy">`
-            : "";
-
+            ? `<img src="${coverUrl(album.coverTrackId, 256)}" alt="" loading="lazy" decoding="async">` : "";
         const coverStyle = album.coverTrackId ? ""
             : `background: ${purpleGradient(album.name + album.artist)}`;
-
         const year = getAlbumYear(album);
         const yearText = year ? `${year}` : `${album.tracks.length} треков`;
-
-        card.innerHTML = `
-            <div class="artist-album-cover" style="${coverStyle}">
-                ${coverInner}
-                <button class="artist-album-play" title="Играть альбом">
-                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-                </button>
-            </div>
-            <div class="artist-album-name">${escapeHtml(album.name)}</div>
-            <div class="artist-album-year">${yearText}</div>
-        `;
-
-        card.addEventListener("click", () => {
-            state.albumBackArtistKey = artist.key;
-            state.currentArtistKey = null;
-            state.currentAlbumKey = album.key;
-            state.albumBackTarget = "artists";
-            state.view = "albums";
-            $$("[data-view]").forEach(b => b.classList.remove("active"));
-            document.querySelectorAll('[data-view="albums"]').forEach(b => b.classList.add("active"));
-            applyFilters();
-            document.querySelector(".main").scrollTop = 0;
-        });
-
-        card.querySelector(".artist-album-play").addEventListener("click", (e) => {
-            e.stopPropagation();
-            if (album.tracks.length) playTrackFromList(album.tracks[0], album.tracks);
-        });
-
-        scroll.appendChild(card);
-    });
+        return `<div class="artist-album-card" data-key="${escapeHtml(album.key)}">` +
+            `<div class="artist-album-cover" style="${coverStyle}">${coverInner}` +
+                `<button class="artist-album-play" title="Играть альбом">${PLAY_ICON}</button>` +
+            `</div>` +
+            `<div class="artist-album-name">${escapeHtml(album.name)}</div>` +
+            `<div class="artist-album-year">${yearText}</div>` +
+        `</div>`;
+    }).join("");
+    if (keepLeft) setScrollLeft(scroll, keepLeft);
 
     updateArtistAlbumsNav();
 }
+
+// Один обработчик на всю ленту (раньше — по два на каждую карточку).
+$("#artist-albums-scroll").addEventListener("click", (e) => {
+    const card = e.target.closest(".artist-album-card");
+    if (!card) return;
+    if (e.target.closest(".artist-album-play")) {
+        e.stopPropagation();
+        const album = state.albums.find(a => a.key === card.dataset.key);
+        if (album && album.tracks.length) playTrackFromList(album.tracks[0], album.tracks);
+        return;
+    }
+    // Альбом открывается «из артиста»: вкладка остаётся «Артисты»,
+    // а «Назад» вернёт в карточку артиста на то же место.
+    openAlbum(card.dataset.key, true);
+});
 
 function updateArtistAlbumsNav() {
     const scroll = $("#artist-albums-scroll");
@@ -1323,9 +1609,15 @@ function updateArtistAlbumsNav() {
     prevBtn.onclick = () => scroll.scrollBy({ left: -scrollAmount(), behavior: "smooth" });
     nextBtn.onclick = () => scroll.scrollBy({ left: scrollAmount(), behavior: "smooth" });
 
-    scroll.addEventListener("scroll", updateButtons);
-    window.addEventListener("resize", updateButtons);
-    setTimeout(updateButtons, 50);
+    // Присваиваем, а не addEventListener: иначе при каждой перерисовке
+    // карточки артиста обработчики накапливались бы.
+    scroll.onscroll = updateButtons;
+    updateArtistAlbumsNav.refresh = updateButtons;
+    if (!updateArtistAlbumsNav.bound) {
+        updateArtistAlbumsNav.bound = true;
+        window.addEventListener("resize", () => updateArtistAlbumsNav.refresh && updateArtistAlbumsNav.refresh());
+    }
+    requestAnimationFrame(updateButtons);
 }
 
 /* ============================================================
@@ -1525,9 +1817,12 @@ function updatePlayerUI(track) {
 }
 
 function highlightCurrent() {
-    $$(".track-row").forEach((row) => {
-        row.classList.toggle("playing", row.dataset.trackId === state.currentTrackId);
-    });
+    // В DOM только видимые строки, но и их незачем обходить все: снимаем метку
+    // с прежней и ставим на текущую.
+    $$(".track-row.playing").forEach((row) => row.classList.remove("playing"));
+    if (!state.currentTrackId) return;
+    document.querySelectorAll(`.track-row[data-track-id="${CSS.escape(state.currentTrackId)}"]`)
+        .forEach((row) => row.classList.add("playing"));
 }
 
 /* ============================================================
@@ -2246,16 +2541,21 @@ searchInput.addEventListener("input", (e) => {
     searchClear.classList.toggle("hidden", !value);
     clearTimeout(searchTimeout);
     searchTimeout = setTimeout(() => {
-        state.search = value.trim();
+        const q = value.trim();
+        if (q === state.search) return;
+        state.search = q;
+        mainEl.scrollTop = 0;   // новая выдача — с начала
         applyFilters();
     }, 150);
 });
 
 searchClear.addEventListener("click", () => {
-    searchInput.value = "";
-    searchClear.classList.add("hidden");
-    state.search = "";
-    applyFilters();
+    const changed = state.search !== "";
+    setSearchValue("");
+    if (changed) {
+        mainEl.scrollTop = 0;
+        applyFilters();
+    }
     searchInput.focus();
 });
 
@@ -2271,50 +2571,13 @@ document.addEventListener("keydown", (e) => {
    NAV
    ============================================================ */
 $$("[data-view]").forEach(btn => {
-    btn.addEventListener("click", () => {
-        const view = btn.dataset.view;
-
-        $$("[data-view]").forEach(b => b.classList.remove("active"));
-
-        document.querySelectorAll(`[data-view="${view}"]`).forEach(b => {
-            b.classList.add("active");
-        });
-
-        state.view = view;
-        state.currentAlbumKey = null;
-        state.currentArtistKey = null;
-        state.albumBackTarget = "albums";
-        state.albumBackArtistKey = null;
-        applyFilters();
-    });
+    btn.addEventListener("click", () => switchView(btn.dataset.view));
 });
 
-$("#back-to-albums").addEventListener("click", () => {
-    if (state.albumBackTarget === "artists" && state.albumBackArtistKey) {
-        const artistKey = state.albumBackArtistKey;
-        state.currentAlbumKey = null;
-        state.currentArtistKey = artistKey;
-        state.albumBackTarget = "albums";
-        state.albumBackArtistKey = null;
-        state.view = "artists";
-        $$("[data-view]").forEach(b => b.classList.remove("active"));
-        document.querySelectorAll('[data-view="artists"]').forEach(b => b.classList.add("active"));
-        applyFilters();
-        document.querySelector(".main").scrollTop = 0;
-        return;
-    }
-    $$("[data-view]").forEach(b => b.classList.remove("active"));
-    document.querySelectorAll('[data-view="albums"]').forEach(b => b.classList.add("active"));
-    state.view = "albums";
-    closeAlbum();
-});
-
-$("#back-to-artists").addEventListener("click", () => {
-    $$("[data-view]").forEach(b => b.classList.remove("active"));
-    document.querySelectorAll('[data-view="artists"]').forEach(b => b.classList.add("active"));
-    state.view = "artists";
-    closeArtist();
-});
+// «Назад» возвращает туда, откуда пришли: во вкладку (или в карточку артиста,
+// если альбом открывали из неё) — с тем же поиском и той же позицией прокрутки.
+$("#back-to-albums").addEventListener("click", closeAlbum);
+$("#back-to-artists").addEventListener("click", closeArtist);
 
 /* ============================================================
    КНОПКИ
