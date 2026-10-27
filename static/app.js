@@ -6,6 +6,16 @@ const EQ_KEY    = "alpha-music-eq";
 const THEME_KEY = "alpha-music-theme";
 const THEME_VERSION = 3;
 
+function readLocalFavorites() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(FAV_KEY) || "[]");
+        if (!Array.isArray(saved)) return new Set();
+        return new Set(saved.filter(id => typeof id === "string" && id));
+    } catch {
+        return new Set();
+    }
+}
+
 const state = {
     tracks: [],
     filteredTracks: [],
@@ -32,7 +42,7 @@ const state = {
     pendingShuffle: null,
     view: "all",
     search: "",
-    favorites: new Set(JSON.parse(localStorage.getItem(FAV_KEY) || "[]")),
+    favorites: readLocalFavorites(),
     eq: {
         enabled: true,
         preset: "flat",
@@ -654,8 +664,64 @@ function isUnknownAlbum(album) {
 /* ============================================================
    FAVORITES
    ============================================================ */
+let favoritesDirty = false;
+let favoritesSaveChain = Promise.resolve();
+
+function saveFavoritesLocal() {
+    try {
+        localStorage.setItem(FAV_KEY, JSON.stringify([...state.favorites]));
+    } catch {}
+}
+
+function saveFavoritesToServer() {
+    const body = JSON.stringify({ favorites: [...state.favorites] });
+    favoritesSaveChain = favoritesSaveChain
+        .catch(() => {})
+        .then(() => fetch("/api/favorites", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body,
+        }))
+        .then(res => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        })
+        .catch(e => console.warn("Не удалось сохранить избранное:", e));
+}
+
 function saveFavorites() {
-    localStorage.setItem(FAV_KEY, JSON.stringify([...state.favorites]));
+    favoritesDirty = true;
+    saveFavoritesLocal();
+    saveFavoritesToServer();
+}
+
+// Избранное хранится на сервере (%APPDATA%\Music\settings.json): localStorage
+// зависит от порта и профиля WebView2, поэтому только им доверять нельзя.
+async function loadFavorites() {
+    try {
+        const res = await fetch("/api/favorites", { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const server = new Set(Array.isArray(data.favorites) ? data.favorites : []);
+
+        if (favoritesDirty) {
+            // Пользователь успел нажать лайк, пока шёл запрос: объединяем,
+            // чтобы не потерять только что поставленную отметку.
+            server.forEach(id => state.favorites.add(id));
+            saveFavoritesLocal();
+            saveFavoritesToServer();
+        } else if (server.size) {
+            state.favorites = server;
+            saveFavoritesLocal();
+        } else if (state.favorites.size) {
+            // Первый запуск после обновления: переносим избранное из localStorage.
+            saveFavoritesToServer();
+        }
+    } catch (e) {
+        console.warn("Не удалось загрузить избранное:", e);
+    }
+    updateFavCount();
+    updatePlayerFavBtn();
+    applyFilters();
 }
 
 function isFavorite(trackId) {
@@ -2829,4 +2895,5 @@ audio.onAdvance = (track) => {
 initAudioSettings(audio, {
     onDeviceLost: () => { if (state.isPlaying) togglePlay(); },
 });
+loadFavorites();
 loadTracks();

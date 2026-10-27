@@ -16,7 +16,9 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 # (геометрия, переключатели). Запись должна быть атомарной и не терять
 # ключи, которые другой поток успел сохранить.
 _save_lock = threading.RLock()
-_LIBRARY_KEYS = {"music_dirs", "music_dir"}
+# Ключи, которые нельзя затирать устаревшим снимком настроек окна/трея:
+# папки библиотеки меняются из веб-интерфейса, избранное — кнопками в нём.
+_PROTECTED_KEYS = {"music_dirs", "music_dir", "favorites", "web_port"}
 
 
 def _default_music_dir() -> str:
@@ -86,7 +88,7 @@ def save_settings(settings: dict, replace: bool = False) -> None:
             # и трея может быть устаревшая копия music_dirs; не даём ей
             # вернуть удалённую папку или потерять только что добавленную.
             data.update({k: v for k, v in settings.items()
-                         if k not in _LIBRARY_KEYS})
+                         if k not in _PROTECTED_KEYS})
         try:
             tmp = _settings_path() + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
@@ -151,4 +153,52 @@ def save_music_dirs(paths) -> None:
         settings = load_settings()
         settings["music_dirs"] = _clean_paths(paths)
         settings.pop("music_dir", None)
+        save_settings(settings, replace=True)
+
+
+def _clean_favorite_ids(ids) -> list:
+    """Убирает пустые/некорректные/повторяющиеся id треков, сохраняя порядок."""
+    out, seen = [], set()
+    if not isinstance(ids, (list, tuple)):
+        return out
+
+    for raw in ids:
+        if not isinstance(raw, str):
+            continue
+        value = raw.strip()
+        if not value or len(value) > 256 or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def load_favorites() -> list:
+    """Избранные треки, сохранённые на сервере.
+
+    Избранное живёт в settings.json, а не только в localStorage: WebView2
+    может очистить профиль, а адрес приложения зависит от свободного порта.
+    """
+    return _clean_favorite_ids(load_settings().get("favorites"))
+
+
+def save_favorites(ids) -> None:
+    with _save_lock:
+        settings = load_settings()
+        settings["favorites"] = _clean_favorite_ids(ids)
+        save_settings(settings, replace=True)
+
+
+def load_web_port() -> int:
+    """Последний порт локального сервера (0, если ещё не сохранялся)."""
+    try:
+        return int(load_settings().get("web_port") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def save_web_port(port: int) -> None:
+    with _save_lock:
+        settings = load_settings()
+        settings["web_port"] = int(port)
         save_settings(settings, replace=True)

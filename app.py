@@ -387,6 +387,23 @@ def api_library_folder_remove():
     return jsonify({"ok": True, **_library_payload()})
 
 
+@app.route("/api/favorites")
+def api_favorites():
+    return jsonify({"favorites": app_settings.load_favorites()})
+
+
+@app.route("/api/favorites", methods=["POST"])
+def api_favorites_save():
+    data = request.get_json(silent=True) or {}
+    favorites = data.get("favorites")
+    if not isinstance(favorites, list):
+        return jsonify({"ok": False,
+                        "error": "Некорректный список избранного"}), 400
+    app_settings.save_favorites(favorites)
+    return jsonify({"ok": True,
+                    "favorites": app_settings.load_favorites()})
+
+
 @app.route("/api/stream/<track_id>")
 def api_stream(track_id):
     path = find_track_by_id(track_id)

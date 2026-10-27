@@ -49,6 +49,7 @@ _setup_frozen_logging()
 import webview
 from flask import abort, jsonify, request
 
+import app_settings
 import file_assoc
 import instance
 from app import (ALLOWED_EXT, EXTERNAL_TRACKS, app, extract_cover,
@@ -272,12 +273,21 @@ def _maximized_client_rect(hwnd):
 # ============================================================
 # ПОРТ / FLASK
 # ============================================================
-def find_free_port(start: int, end: int) -> int:
+def _port_is_free(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        return s.connect_ex(("127.0.0.1", port)) != 0
+
+
+def find_free_port(start: int, end: int, preferred: int = 0) -> int:
+    # Сначала пробуем порт, на котором приложение работало в прошлый раз:
+    # localStorage в WebView2 привязан к origin (127.0.0.1:порт), и смена
+    # порта означала бы потерю настроек интерфейса.
+    if start <= preferred < end and _port_is_free(preferred):
+        return preferred
     for port in range(start, end):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            if s.connect_ex(("127.0.0.1", port)) != 0:
-                return port
+        if _port_is_free(port):
+            return port
     raise RuntimeError(f"Нет свободного порта в диапазоне {start}-{end}")
 
 
@@ -1106,7 +1116,10 @@ def main() -> None:
     except Exception as e:
         _log(f"register_app_id: {e}")
 
-    port = find_free_port(PORT_START, PORT_END)
+    last_port = app_settings.load_web_port()
+    port = find_free_port(PORT_START, PORT_END, last_port)
+    if port != last_port:
+        app_settings.save_web_port(port)
     url = f"http://127.0.0.1:{port}"
 
     controller.token = secrets.token_hex(16)
@@ -1166,7 +1179,14 @@ def main() -> None:
     window.events.loaded += controller.on_loaded
     window.events.closing += controller.on_closing
 
-    webview.start(debug=False)
+    # private_mode=True (по умолчанию) не сохраняет localStorage/cookies
+    # между запусками: WebView2 работает с временным профилем. Из-за этого
+    # пропадали избранное, тема, эквалайзер, громкость и недавние треки.
+    webview.start(
+        debug=False,
+        private_mode=False,
+        storage_path=os.path.join(instance.data_dir(), "webview"),
+    )
 
     # webview.start() вернулся — приложение закрывается.
     controller.quitting = True

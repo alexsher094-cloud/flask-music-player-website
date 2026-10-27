@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.2 — 2026-10-27
+
+- fixed favorites being lost after restart: favorites are now stored on the
+  server in `%APPDATA%\Music\settings.json` and no longer depend on the
+  WebView2 profile or the local port;
+- WebView2 now uses a persistent profile instead of a temporary private one,
+  so theme, equalizer, volume, shuffle/repeat and recent tracks also survive
+  restarts;
+- the app remembers its last port, keeping the page origin (and localStorage)
+  stable between launches;
+- existing favorites are migrated from localStorage on the first launch;
+- malformed or duplicate favorite entries are ignored.
+
 ## 1.0.1 — 2026-10-27
 
 - fixed library folders being reset on the next launch: window/tray settings
