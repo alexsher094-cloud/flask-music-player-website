@@ -8,8 +8,15 @@ app_settings.py — настройки приложения и папки биб
 import json
 import os
 import sys
+import threading
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# settings.json обновляют и Flask (папки библиотеки), и окно/трей
+# (геометрия, переключатели). Запись должна быть атомарной и не терять
+# ключи, которые другой поток успел сохранить.
+_save_lock = threading.RLock()
+_LIBRARY_KEYS = {"music_dirs", "music_dir"}
 
 
 def _default_music_dir() -> str:
@@ -59,14 +66,34 @@ def load_settings() -> dict:
     return data
 
 
-def save_settings(settings: dict) -> None:
-    try:
-        tmp = _settings_path() + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(settings, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, _settings_path())
-    except OSError:
-        pass
+def save_settings(settings: dict, replace: bool = False) -> None:
+    """Сохраняет настройки.
+
+    По умолчанию перечитывает файл и обновляет только переданные ключи:
+    у окна и трея есть свой снимок настроек, и при закрытии он не должен
+    затирать music_dirs, добавленные из веб-интерфейса. replace=True
+    записывает ровно переданный словарь (нужно для save_music_dirs,
+    чтобы можно было удалить устаревший music_dir).
+    """
+    if not isinstance(settings, dict):
+        return
+    with _save_lock:
+        if replace:
+            data = dict(settings)
+        else:
+            data = load_settings()
+            # Список папок меняется только через save_music_dirs(). У окна
+            # и трея может быть устаревшая копия music_dirs; не даём ей
+            # вернуть удалённую папку или потерять только что добавленную.
+            data.update({k: v for k, v in settings.items()
+                         if k not in _LIBRARY_KEYS})
+        try:
+            tmp = _settings_path() + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, _settings_path())
+        except OSError:
+            pass
 
 
 def _clean_paths(paths) -> list:
@@ -90,6 +117,15 @@ def _clean_paths(paths) -> list:
     return out
 
 
+def has_saved_music_dirs() -> bool:
+    """True, если список папок уже сохранялся (включая старый music_dir)."""
+    settings = load_settings()
+    if isinstance(settings.get("music_dirs"), list):
+        return True
+    legacy = settings.get("music_dir")
+    return isinstance(legacy, str) and bool(legacy.strip())
+
+
 def load_music_dirs() -> list:
     """Список корневых папок библиотеки.
 
@@ -99,7 +135,7 @@ def load_music_dirs() -> list:
     """
     settings = load_settings()
 
-    if "music_dirs" in settings:
+    if isinstance(settings.get("music_dirs"), list):
         return _clean_paths(settings.get("music_dirs"))
 
     # Обратная совместимость на случай, если когда-то уже был один music_dir.
@@ -111,7 +147,8 @@ def load_music_dirs() -> list:
 
 
 def save_music_dirs(paths) -> None:
-    settings = load_settings()
-    settings["music_dirs"] = _clean_paths(paths)
-    settings.pop("music_dir", None)
-    save_settings(settings)
+    with _save_lock:
+        settings = load_settings()
+        settings["music_dirs"] = _clean_paths(paths)
+        settings.pop("music_dir", None)
+        save_settings(settings, replace=True)

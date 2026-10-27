@@ -13,7 +13,7 @@ from mutagen.mp4 import MP4
 import app_settings
 from filename_parser import (UNKNOWN_ARTIST, normalize_album,
                              normalize_artist, parse_filename)
-from library import Library, track_id_for  # noqa: F401  (track_id_for реэкспортируется для desktop.py)
+from library import Library, load_db_roots, track_id_for  # noqa: F401  (track_id_for реэкспортируется для desktop.py)
 
 app = Flask(__name__)
 
@@ -280,9 +280,33 @@ def extract_replaygain(path: str):
 # БИБЛИОТЕКА (SQLite-кэш + превью + watchdog)
 # ============================================================
 # Потоки стартуют только после lib.start() — см. desktop.py / __main__ ниже.
+_DB_PATH = os.path.join(_data_dir(), "library.db")
+
+
+def _initial_music_dirs() -> list:
+    """Список папок на старте.
+
+    Если settings.json потерял music_dirs (баг 1.0.0), пробуем восстановить
+    его из library.db до создания Library — она синхронизирует roots в БД
+    со списком и иначе удалит папки, которых нет в настройках.
+    """
+    if app_settings.has_saved_music_dirs():
+        return app_settings.load_music_dirs()
+
+    recovered = load_db_roots(_DB_PATH)
+    if recovered:
+        logging.getLogger("app").warning(
+            "library: music_dirs отсутствует в настройках, "
+            "восстановлено из БД: %s", ", ".join(recovered))
+        app_settings.save_music_dirs(recovered)
+        return recovered
+
+    return app_settings.load_music_dirs()
+
+
 lib = Library(
-    music_dirs=app_settings.load_music_dirs(),
-    db_path=os.path.join(_data_dir(), "library.db"),
+    music_dirs=_initial_music_dirs(),
+    db_path=_DB_PATH,
     cover_dir=os.path.join(_data_dir(), "covers"),
     read_meta=extract_metadata,
     read_cover=extract_cover,

@@ -3,7 +3,7 @@
 
 #define AppName "Music"
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "1.0.1"
 #endif
 #define AppExe "Music.exe"
 #define AppPublisher "Music"

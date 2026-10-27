@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.1 — 2026-10-27
+
+- fixed library folders being reset on the next launch: window/tray settings
+  are now merged atomically and no longer overwrite `music_dirs`;
+- stale window snapshots cannot re-add a folder removed from the library;
+- if `music_dirs` was already lost by 1.0.0, the folder list is recovered
+  from the library database on first start.
+
 ## 1.0.0 — 2026-10-27
 
 First standalone Windows release.

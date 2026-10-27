@@ -24,6 +24,7 @@ import sqlite3
 import threading
 import time
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Callable, Optional
 
 log = logging.getLogger("library")
@@ -122,6 +123,39 @@ def _rg_dict(tg, tp, ag, ap):
     if tg is None and ag is None:
         return None
     return {"tg": tg, "tp": tp, "ag": ag, "ap": ap}
+
+
+def load_db_roots(db_path: str) -> list:
+    """Корневые папки из library.db, без изменения файла.
+
+    Нужно для восстановления списка после бага 1.0.0: при закрытии
+    приложение затирало music_dirs в settings.json, а следующий запуск
+    синхронизировал roots в БД с этим пустым списком. Читать нужно до
+    создания Library, иначе она успеет удалить старые корни из БД.
+    Любая ошибка означает «восстанавливать нечего».
+    """
+    if not db_path or not os.path.isfile(db_path):
+        return []
+
+    try:
+        uri = Path(db_path).resolve().as_uri() + "?mode=ro"
+        db = sqlite3.connect(uri, uri=True, timeout=2)
+    except (OSError, ValueError, sqlite3.Error):
+        return []
+
+    try:
+        if db.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
+            return []
+        rows = db.execute(
+            "SELECT path FROM roots "
+            "WHERE path IS NOT NULL AND path <> '' "
+            "ORDER BY position, rowid").fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        db.close()
+
+    return [row[0] for row in rows]
 
 
 class Library:
