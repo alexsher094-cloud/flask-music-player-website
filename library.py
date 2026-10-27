@@ -316,9 +316,47 @@ class Library:
         os.makedirs(os.path.dirname(self.db_path) or ".", exist_ok=True)
         os.makedirs(self.cover_dir, exist_ok=True)
 
+        try:
+            self._open_db_impl()
+        except sqlite3.DatabaseError as e:
+            # Кэш можно потерять: после аварийного завершения или отключения
+            # питания SQLite иногда оставляет повреждённый файл. Вместо
+            # падения на старте откладываем его в сторону и строим заново.
+            log.error("library: БД повреждена (%s), пересоздаю", e)
+            self._close_db_quietly()
+            self._backup_corrupt_db()
+            self._open_db_impl()
+
+    def _close_db_quietly(self) -> None:
+        db = self._db
+        self._db = None
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+    def _backup_corrupt_db(self) -> None:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        for suffix in ("", "-wal", "-shm"):
+            src = self.db_path + suffix
+            if not os.path.exists(src):
+                continue
+            dst = f"{self.db_path}.corrupt-{stamp}{suffix}"
+            try:
+                os.replace(src, dst)
+                log.warning("library: повреждённый файл сохранён как %s", dst)
+            except OSError:
+                try:
+                    os.remove(src)
+                except OSError:
+                    pass
+
+    def _open_db_impl(self) -> None:
         db = sqlite3.connect(self.db_path, check_same_thread=False,
                              isolation_level=None, timeout=30)
         db.row_factory = sqlite3.Row
+        self._db = db
         db.execute("PRAGMA journal_mode=WAL")
         db.execute("PRAGMA synchronous=NORMAL")
 
@@ -328,7 +366,6 @@ class Library:
             db.execute("DROP TABLE IF EXISTS meta")
         db.executescript(_SCHEMA)
         db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-        self._db = db
 
         # Приводим roots в БД к списку из настроек. Треки удалённых папок
         # исчезают, треки недоступных (отключённый диск) остаются в кэше.

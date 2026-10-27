@@ -7,9 +7,24 @@ app_settings.py — настройки приложения и папки биб
 
 import json
 import os
+import sys
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_MUSIC_DIR = os.path.join(APP_DIR, "music")
+
+
+def _default_music_dir() -> str:
+    """Папка библиотеки по умолчанию.
+
+    В исходниках это music/ рядом с проектом. В собранном приложении
+    APP_DIR указывает на временную папку PyInstaller, поэтому берём
+    стандартную папку «Музыка» пользователя.
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.expanduser("~"), "Music")
+    return os.path.join(APP_DIR, "music")
+
+
+DEFAULT_MUSIC_DIR = _default_music_dir()
 
 _DEFAULTS = {
     "close_to_tray": True,

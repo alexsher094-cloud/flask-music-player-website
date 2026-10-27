@@ -1,0 +1,29 @@
+# Changelog
+
+## 1.0.0 — 2026-10-27
+
+First standalone Windows release.
+
+### Player
+
+- frameless pywebview / WebView2 window with a custom title bar;
+- mini-player mode with fixed height, drag handling and screen-snap protection;
+- tray icon, close-to-tray, autostart with Windows;
+- media keys, taskbar thumbnail buttons and progress;
+- jump list, file associations and Explorer context-menu entries;
+- Discord Rich Presence;
+- multi-folder library with SQLite cache, cover thumbnails and a file watcher;
+- metadata parsing from filename and tags, multi-artist support;
+- ReplayGain normalization, equalizer, themes;
+- single-instance mode: opening a track hands it to the running player.
+
+### Distribution
+
+- PyInstaller onedir build (`Music.spec`) with version resource and icon;
+- Inno Setup installer (`installer/setup.iss`), per-user install, no UAC;
+- installer shortcuts and the running app share the `Music.Player` AppUserModelID,
+  so the taskbar button uses the app icon and pins/groups correctly;
+- `build.ps1` builds both artefacts and reads the version from `version.py`;
+- release build writes diagnostics to `%APPDATA%\Music\music.log`;
+- installed build uses `%USERPROFILE%\Music` as the initial library folder;
+- a corrupted SQLite cache is backed up and recreated automatically on startup.

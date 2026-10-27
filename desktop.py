@@ -22,6 +22,30 @@ from ctypes import wintypes
 os.environ.setdefault("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
                       "--autoplay-policy=no-user-gesture-required")
 
+
+def _setup_frozen_logging() -> None:
+    """В windowed-сборке нет консоли — пишем stdout/stderr в music.log."""
+    if not getattr(sys, "frozen", False):
+        return
+    try:
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        folder = os.path.join(base, "Music")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, "music.log")
+        if os.path.exists(path) and os.path.getsize(path) > 1_000_000:
+            try:
+                os.replace(path, path + ".old")
+            except OSError:
+                pass
+        stream = open(path, "a", encoding="utf-8", buffering=1)
+        sys.stdout = stream
+        sys.stderr = stream
+    except OSError:
+        pass
+
+
+_setup_frozen_logging()
+
 import webview
 from flask import abort, jsonify, request
 
@@ -30,6 +54,7 @@ import instance
 from app import (ALLOWED_EXT, EXTERNAL_TRACKS, app, extract_cover,
                  extract_metadata, extract_replaygain, track_id_for, lib)
 from presence import DiscordPresence
+from version import __version__
 from windows_integration import WindowsIntegration, ensure_icon_file
 
 
@@ -1023,6 +1048,7 @@ def _api_instance_open():
 # ============================================================
 def parse_args():
     p = argparse.ArgumentParser(description="Music")
+    p.add_argument("--version", action="version", version=f"Music {__version__}")
     p.add_argument("files", nargs="*", help="аудиофайлы для воспроизведения")
     p.add_argument("--enqueue", action="store_true", help="добавить в очередь")
     p.add_argument("--minimized", action="store_true", help="стартовать скрытым в трей")
